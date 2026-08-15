@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { HandoffCard as HandoffCardType } from "@/lib/types";
 import { UserCheck, X } from "lucide-react";
 
@@ -9,25 +10,43 @@ interface Props {
 }
 
 export function HandoffCard({ card, onDismiss }: Props) {
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeBtnRef.current?.focus();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onDismiss]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="handoff-title"
+    >
       <div className="w-full max-w-md bg-[#0d1528] border border-red-500/30 rounded-2xl shadow-2xl glow-red overflow-hidden slide-up">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 bg-red-500/10 border-b border-red-500/20">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center">
-              <UserCheck className="w-4 h-4 text-red-400" />
+              <UserCheck className="w-4 h-4 text-red-400" aria-hidden="true" />
             </div>
             <div>
-              <p className="font-semibold text-red-300 text-sm">Human Handoff Request</p>
+              <p id="handoff-title" className="font-semibold text-red-300 text-sm">Human Handoff Request</p>
               <p className="text-xs text-gray-500">Customer wants to speak with an agent</p>
             </div>
           </div>
           <button
+            ref={closeBtnRef}
             onClick={onDismiss}
+            aria-label="Dismiss handoff request"
             className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
           >
-            <X className="w-4 h-4 text-gray-400" />
+            <X className="w-4 h-4 text-gray-400" aria-hidden="true" />
           </button>
         </div>
 
@@ -66,7 +85,12 @@ export function HandoffCard({ card, onDismiss }: Props) {
 
         {/* Actions */}
         <div className="px-5 pb-4 flex gap-2">
-          <button className="flex-1 py-2.5 bg-brand-600 hover:bg-brand-500 rounded-xl text-sm font-semibold text-white transition-colors">
+          <button
+            disabled
+            aria-disabled="true"
+            title="Live agent transfer isn't wired up yet"
+            className="flex-1 py-2.5 bg-brand-600 rounded-xl text-sm font-semibold text-white opacity-40 cursor-not-allowed"
+          >
             Connect Now
           </button>
           <button

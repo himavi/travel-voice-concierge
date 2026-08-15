@@ -26,7 +26,6 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
     """
     client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 
-    # Write to temp file — Groq needs a file-like object with a name
     suffix = os.path.splitext(filename)[-1] or ".webm"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
@@ -36,13 +35,28 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
         async with aiofiles.open(tmp_path, "rb") as f:
             audio_data = await f.read()
 
+        print(f"[STT] Audio size: {len(audio_data)} bytes, filename: {filename}")
+
+        # Determine content type
+        if suffix == ".ogg":
+            content_type = "audio/ogg"
+        elif suffix == ".mp4":
+            content_type = "audio/mp4"
+        elif suffix == ".wav":
+            content_type = "audio/wav"
+        else:
+            content_type = "audio/webm"
+
         transcription = await client.audio.transcriptions.create(
-            file=(filename, audio_data, "audio/webm"),
-            model="whisper-large-v3",
+            file=(filename, audio_data, content_type),
+            model="whisper-large-v3-turbo",  # faster + just as accurate
             language="en",
             response_format="text",
         )
-        return transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
+        
+        result = transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
+        print(f"[STT] Transcription result: '{result}'")
+        return result
     finally:
         try:
             os.unlink(tmp_path)

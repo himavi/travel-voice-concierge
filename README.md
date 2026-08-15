@@ -20,7 +20,44 @@ The AI responds naturally, asks smart follow-up questions, and — without the u
 - Passport → (still asking)
 - Lead Score → climbing
 
-When the user says *"I want to talk to a real person"*, the system flags it immediately and shows a handoff card with everything collected so far.
+Every field that gets filled, every question the agent decides to ask next, and every score change is logged to a visible **decision trace** — so nothing the AI does is a black box.
+
+When the user says *"I want to talk to a real person"*, the system flags it immediately and shows a handoff card with everything collected so far, plus an AI-written summary for whoever picks up the conversation.
+
+---
+
+## Architecture
+
+```
+Browser (mic / text)
+   │
+   ├── POST /api/sessions/{id}/audio  ──►  Groq Whisper (STT)
+   │        or /text                        │
+   │                                         ▼
+   │                                 ConversationManager
+   │                                   │            │
+   │                       extraction call      response call
+   │                       (gpt-oss-120b,       (gpt-oss-120b,
+   │                        temp 0.1, JSON)      temp 0.7, chat)
+   │                             │                    │
+   │                             ▼                    ▼
+   │                     profile fields          reply text
+   │                     + decision events            │
+   │                                                   ▼
+   │                                            Edge TTS (MP3)
+   │                                                   │
+   │  ◄── HTTP response (reply + audio, base64) ───────┘
+   │
+   └── WebSocket /ws/{id}  ◄── profile_update / decision_event /
+                                transcript / handoff / status
+```
+
+Two channels do two different jobs:
+
+- **REST** (`/api/sessions/{id}/audio` and `/text`) carries the actual conversational round-trip — it's what the mic button waits on for a reply.
+- **WebSocket** (`/ws/{id}`) is a one-way push channel the backend uses to keep the dashboard (profile panel, lead score, decision trace, handoff card) in sync in real time, independent of whichever REST call is in flight. The frontend also reconnects it automatically with backoff if it drops.
+
+**Every user turn costs two LLM calls, not one** — a low-temperature extraction pass that returns structured JSON (destination, passport, purpose, etc.) and a separate higher-temperature pass that generates the actual reply. They're split deliberately: mixing "return valid JSON" and "sound like a warm travel agent" in one prompt made the model waffle between modes. The trade-off is real — it roughly doubles time-to-first-token versus a single tool-calling pass. See [Known limitations](#known-limitations--what-id-change-for-production) for how I'd close that gap.
 
 ---
 
@@ -28,27 +65,30 @@ When the user says *"I want to talk to a real person"*, the system flags it imme
 
 | Layer | Tech |
 |---|---|
-| Frontend | Next.js 14 + Tailwind |
+| Frontend | Next.js 14 (App Router) + Tailwind |
 | Backend | FastAPI + WebSockets |
-| LLM | Groq (llama-3.3-70b) |
-| Speech-to-Text | Groq Whisper API |
+| LLM | `openai/gpt-oss-120b` via Groq |
+| Speech-to-Text | Groq Whisper (`whisper-large-v3-turbo`) |
 | Text-to-Speech | Edge TTS (Microsoft, free) |
-| Database | SQLite |
+| Database | SQLite (schema present; sessions currently live in memory — see limitations) |
 | Real-time | WebSockets |
 
 Everything is free to run. No paid APIs required beyond Groq's free tier.
+
+> The model was originally `llama-3.3-70b-versatile`; Groq deprecated it, so it's now on `openai/gpt-oss-120b`. Worth knowing if you're benchmarking against an older fork of this repo.
 
 ---
 
 ## Features
 
 - **Voice conversation** — speak naturally, get a voice response back
-- **Barge-in / interruption** — cut the AI off mid-sentence, it stops and listens
-- **Live customer profile** — extracts structured data as the conversation happens
-- **Lead scoring** — 0–100 score updates in real time based on what's been collected
-- **Decision trace** — timeline showing what the AI detected and why it asked what it asked
-- **Human handoff** — detects when user wants a human, shows full handoff card on dashboard
-- **Agentic questioning** — AI decides what to ask next based on what's missing, not a fixed script
+- **Live customer profile** — extracts structured data as the conversation happens, one field at a time, never guessing
+- **Lead scoring** — 0–100 score, weighted by field (destination/passport worth more than budget), updates in real time
+- **Decision trace** — a timestamped log of every extraction, score change, and question decision, so you can see *why* the agent asked what it asked
+- **Human handoff** — detects handoff intent, generates an AI summary of the conversation, and surfaces a full handoff card on the dashboard
+- **Agentic questioning** — the agent picks the next question from what's actually missing (see `get_next_priority_field`), not a fixed script
+- **Reconnecting WebSocket** — dashboard state survives a dropped connection without a page reload
+- **Keyboard-accessible, responsive UI** — the voice orb is operable via Enter/Space (not just press-and-hold), layout collapses cleanly below 1024px, and focus states are visible for keyboard navigation
 
 ---
 
@@ -58,21 +98,22 @@ Everything is free to run. No paid APIs required beyond Groq's free tier.
 .
 ├── backend/
 │   ├── app/
-│   │   ├── agent/          # AI agent logic, prompts, conversation manager
-│   │   ├── tools/          # Visa knowledge, lead scoring, calculator
-│   │   ├── models/         # Pydantic schemas (profile, events, session)
-│   │   └── api/            # FastAPI routes + WebSocket handlers
+│   │   ├── agent/          # conversation.py (orchestration), prompts.py, voice.py (STT/TTS)
+│   │   ├── tools/          # lead_scorer.py, visa_knowledge.py
+│   │   ├── models/         # schemas.py — Pydantic models for profile, events, session
+│   │   └── api/            # routes.py (REST + WS), websocket_manager.py
 │   ├── main.py
 │   └── requirements.txt
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── app/            # Next.js app router pages
+│   │   ├── app/             # Next.js app router — page, layout, error/404 boundaries
 │   │   ├── components/
-│   │   │   ├── voice/      # Mic button, waveform, conversation transcript
-│   │   │   └── dashboard/  # Profile panel, lead score, decision trace, handoff
-│   │   ├── hooks/          # useWebSocket, useVoice, useProfile
-│   │   └── lib/            # WebSocket client, audio utils
+│   │   │   ├── voice/       # VoiceOrb, Transcript
+│   │   │   ├── dashboard/   # ProfilePanel, LeadScore, DecisionTrace, HandoffCard
+│   │   │   └── CustomCursor.tsx
+│   │   ├── hooks/           # useVoiceAgent.ts — WS lifecycle, mic capture, playback
+│   │   └── lib/             # types.ts
 │   └── package.json
 │
 └── .env.example
@@ -113,7 +154,8 @@ Get a free key at [console.groq.com](https://console.groq.com) — no credit car
 Start the backend:
 
 ```bash
-uvicorn main:app --reload --port 8000
+python main.py
+# or: uvicorn main:app --reload --port 8000
 ```
 
 ### 3. Frontend setup
@@ -130,15 +172,37 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## How the agent works
 
-The AI isn't following a script. It gets a system prompt that tells it:
+Each turn runs through `ConversationManager.process_message`:
 
-- What information it needs to collect (destination, passport, travelers, dates, purpose)
-- To ask only one question at a time
-- To sound like a helpful travel advisor, not a form
+1. **Extract** — the raw user message goes to the LLM with `PROFILE_EXTRACTION_PROMPT` (temp 0.1, asked to return JSON or `{}`, told explicitly not to guess). Whatever comes back is diffed against the current profile — only *changed* fields become events and WebSocket pushes.
+2. **Score** — `calculate_lead_score` re-sums a fixed weight table (destination/passport worth 15 each, budget worth 5, a handoff request alone is worth 10 as a strong intent signal) and emits a `LEAD_SCORE_UPDATED` event if it moved.
+3. **Decide next question** — `get_next_priority_field` walks a fixed priority order (destination → passport → purpose → dates → travelers → visa requirement → budget) and returns the first thing still missing. This becomes the "Next Action" hint on the dashboard.
+4. **Respond** — a second LLM call gets the full `SYSTEM_PROMPT` (persona + rules: one question at a time, under 3 sentences, never sound like a form) plus a compact one-line summary of the known profile plus the last 10 turns of history, and generates the reply.
+5. **Synthesize** — the reply text goes to Edge TTS and comes back as MP3 bytes, base64-encoded straight into the HTTP response.
 
-After each user message, it also runs a structured extraction pass to pull out any profile fields mentioned. Those go straight to the dashboard via WebSocket.
+Every step that changes state — a field extracted, a score change, a question chosen, a handoff flagged — appends a `DecisionEvent`, which is what powers the decision trace panel. Nothing on that panel is decorative; it's a direct log of what `process_message` actually did.
 
-The lead score updates based on how many fields are filled and whether the user has shown buying intent.
+---
+
+## Design decisions
+
+- **Two LLM calls instead of one function-calling pass.** Simpler prompts, easier to debug independently, and the extraction call can run at temp 0.1 for determinism while the reply call runs at 0.7 for warmth. Costs latency — see limitations.
+- **WebSocket for dashboard state, REST for the conversational turn.** The mic button's request/response cycle shouldn't depend on a persistent connection staying open; the dashboard should update live regardless of which REST call is mid-flight. Splitting them meant neither has to compromise for the other.
+- **Fixed-weight lead scoring over an LLM-judged score.** A rules-based score is auditable, deterministic, and free to compute on every turn. An LLM-judged "how hot is this lead" would be more nuanced but non-reproducible and slower — reasonable for a v2, not the first version.
+- **In-memory session store.** Simplest thing that works for a demo; explicitly not what you'd ship (see below).
+
+---
+
+## Known limitations & what I'd change for production
+
+Being upfront about this because it's more useful than pretending the demo is finished:
+
+- **Sessions live in a process-local dict** (`sessions: Dict[str, ConversationManager]` in `routes.py`). Restart the backend and every active conversation is gone. There's a SQLAlchemy + SQLite dependency already in `requirements.txt` for this — wiring it up is the next step, not a redesign.
+- **Two sequential LLM calls per turn** roughly doubles latency versus a single call with tool-calling/structured output support. Groq's models support function calling; collapsing extraction + response into one call with a `respond_to_user` tool schema is the obvious next optimization.
+- **No streaming TTS to the client**, even though `synthesize_speech_streaming` already exists in `voice.py` — it's just not wired into the routes yet. The whole reply is synthesized before any audio reaches the browser, which is the single biggest latency win left on the table.
+- **No retries or observability on the Groq calls.** Extraction failures are swallowed and silently return `{}`, which is the right *user-facing* behavior (never surface a malformed-JSON error to someone mid-conversation) but there's no logging behind it either, so a real failure looks identical to "nothing was mentioned."
+- **No auth or rate limiting** on session creation — fine for a local demo, not fine for anything public.
+- **No automated tests.** The conversation logic (extraction diffing, score calculation, next-field priority) is pure and easy to unit test; it just isn't yet.
 
 ---
 
@@ -153,7 +217,9 @@ More than enough for demos and early testing. If you're running this in producti
 
 ## Roadmap
 
-- [ ] Persistent sessions with PostgreSQL
+- [ ] Persistent sessions with the existing SQLAlchemy models
+- [ ] Collapse extraction + response into a single tool-calling call
+- [ ] Stream TTS audio instead of waiting for full synthesis
 - [ ] Multi-language support
 - [ ] CRM integration (HubSpot / Salesforce)
 - [ ] Actual Atlys visa API integration

@@ -103,7 +103,8 @@ async def send_audio(
     # Step 1: Transcribe
     audio_bytes = await audio.read()
     try:
-        transcript = await transcribe_audio(audio_bytes, audio.filename or "audio.webm")
+        filename = audio.filename or "audio.webm"
+        transcript = await transcribe_audio(audio_bytes, filename)
     except Exception as e:
         await manager.send_error(session_id, f"Transcription failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
@@ -167,12 +168,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     # Send initial greeting
     greeting = "Hi there! I'm Aria, your travel concierge. Where are you planning to go?"
+    from app.models.schemas import ConversationMessage
+    conv.history.append(ConversationMessage(role="assistant", content=greeting))
+    await manager.send_status(session_id, "idle")
     await manager.send_transcript(session_id, "assistant", greeting)
-    conv.history.append(
-        __import__("app.models.schemas", fromlist=["ConversationMessage"]).ConversationMessage(
-            role="assistant", content=greeting
-        )
-    )
 
     try:
         while True:

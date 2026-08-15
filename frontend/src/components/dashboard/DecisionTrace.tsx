@@ -3,59 +3,46 @@
 import { DecisionEvent } from "@/lib/types";
 import clsx from "clsx";
 
-interface Props {
-  events: DecisionEvent[];
-}
+interface Props { events: DecisionEvent[]; }
 
-const EVENT_STYLES: Record<string, { dot: string; text: string; label: string }> = {
-  INTENT_DETECTED:       { dot: "bg-purple-400",  text: "text-purple-300",  label: "Intent" },
-  FIELD_EXTRACTED:       { dot: "bg-green-400",   text: "text-green-300",   label: "Extracted" },
-  FIELD_MISSING:         { dot: "bg-yellow-400",  text: "text-yellow-300",  label: "Missing" },
-  QUESTION_GENERATED:    { dot: "bg-blue-400",    text: "text-blue-300",    label: "Question" },
-  LEAD_SCORE_UPDATED:    { dot: "bg-orange-400",  text: "text-orange-300",  label: "Score" },
-  HANDOFF_REQUESTED:     { dot: "bg-red-400",     text: "text-red-300",     label: "Handoff" },
+const EV: Record<string, { dot: string; label: string; color: string }> = {
+  INTENT_DETECTED:    { dot: "#c084fc", label: "Intent",    color: "#d8b4fe" },
+  FIELD_EXTRACTED:    { dot: "#a855f7", label: "Extracted", color: "#c084fc" },
+  FIELD_MISSING:      { dot: "#fbbf24", label: "Missing",   color: "#fde68a" },
+  QUESTION_GENERATED: { dot: "#818cf8", label: "Question",  color: "#a5b4fc" },
+  LEAD_SCORE_UPDATED: { dot: "#f472b6", label: "Score",     color: "#fbcfe8" },
+  HANDOFF_REQUESTED:  { dot: "#f87171", label: "Handoff",   color: "#fca5a5" },
 };
 
-function formatTime(ts: string) {
+function fmt(ts: string) {
   try {
-    return new Date(ts).toLocaleTimeString("en-US", {
-      hour12: false,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  } catch {
-    return "";
-  }
+    return new Date(ts).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch { return ""; }
 }
 
 export function DecisionTrace({ events }: Props) {
   if (events.length === 0) {
     return (
-      <div className="text-center py-4">
-        <p className="text-gray-600 text-xs">Events will appear as the conversation progresses.</p>
-      </div>
+      <p className="text-xs text-center py-3" style={{ color: "#3b2f5a" }}>
+        Events appear as the conversation progresses.
+      </p>
     );
   }
 
   return (
-    <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
-      {events.map((event, i) => {
-        const style = EVENT_STYLES[event.event_type] || {
-          dot: "bg-gray-400",
-          text: "text-gray-300",
-          label: event.event_type,
-        };
-
+    <div className="space-y-2 max-h-48 overflow-y-auto pr-1" role="log" aria-label="Decision trace">
+      {events.map((ev, i) => {
+        const s = EV[ev.event_type] || { dot: "#6b5c8a", label: ev.event_type, color: "#9c8fc0" };
         return (
-          <div key={i} className="slide-up flex items-start gap-2 text-xs">
-            <span className="text-gray-600 font-mono w-16 flex-shrink-0 pt-0.5">
-              {formatTime(event.timestamp)}
+          <div key={i} className="flex items-start gap-2 text-[11px] slide-up">
+            <span className="font-mono w-14 flex-shrink-0 pt-0.5" style={{ color: "#3b2f5a" }}>
+              {fmt(ev.timestamp)}
             </span>
-            <div className={clsx("w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5", style.dot)} />
+            <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5" aria-hidden="true"
+              style={{ background: s.dot }} />
             <div className="flex-1 min-w-0">
-              <span className={clsx("font-medium", style.text)}>{style.label} </span>
-              <span className="text-gray-400">{event.description}</span>
+              <span className="font-semibold" style={{ color: s.color }}>{s.label} </span>
+              <span style={{ color: "#6b5c8a" }}>{ev.description}</span>
             </div>
           </div>
         );

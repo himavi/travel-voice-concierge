@@ -20,6 +20,10 @@ from app.agent.prompts import SYSTEM_PROMPT, PROFILE_EXTRACTION_PROMPT, HANDOFF_
 
 load_dotenv()
 
+# llama-3.3-70b-versatile is deprecated by Groq (shutoff 2026-08-16) — use their
+# recommended replacement instead.
+CHAT_MODEL = "openai/gpt-oss-120b"
+
 
 class ConversationManager:
     def __init__(self, session_id: str):
@@ -100,10 +104,11 @@ class ConversationManager:
         prompt = PROFILE_EXTRACTION_PROMPT.format(message=message)
         try:
             response = await self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=CHAT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 max_tokens=300,
+                reasoning_effort="low",
             )
             raw = response.choices[0].message.content.strip()
 
@@ -181,13 +186,17 @@ class ConversationManager:
         for msg in self.history[-10:]:
             messages.append({"role": msg.role, "content": msg.content})
 
-        response = await self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=200,
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            response = await self.client.chat.completions.create(
+                model=CHAT_MODEL,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=200,
+                reasoning_effort="low",
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return "Sorry, I didn't quite catch that — could you say it again?"
 
     def _build_profile_context(self) -> str:
         """Summarize known profile for the LLM context injection."""
@@ -224,10 +233,11 @@ class ConversationManager:
 
         try:
             response = await self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=CHAT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=150,
+                reasoning_effort="low",
             )
             summary = response.choices[0].message.content.strip()
         except Exception:

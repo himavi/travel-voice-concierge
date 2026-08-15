@@ -3,88 +3,249 @@
 @tailwind utilities;
 
 :root {
-  --background: #0a0f1e;
-  --foreground: #e8edf8;
+  --void:       #05030f;
+  --space-1:    #080612;
+  --space-2:    #0d0920;
+  --space-3:    #110c2a;
+  --nebula-1:   #7c3aed;  /* violet-600 */
+  --nebula-2:   #a855f7;  /* purple-500 */
+  --nebula-3:   #c084fc;  /* purple-400 */
+  --nebula-glow:#6d28d9;
+  --star-white: #f8f4ff;
+  --text-main:  #f0ebff;
+  --text-dim:   #9c8fc0;
 }
 
+* { box-sizing: border-box; }
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--void);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar {
-  width: 4px;
+/*
+  The custom cursor (see CustomCursor.tsx) only hides the native cursor once
+  it has confirmed — via JS — that the device has a fine pointer and the user
+  hasn't requested reduced motion. It marks that state by adding this class to
+  <html>, so touch, keyboard, and reduced-motion users always keep a normal,
+  visible cursor.
+*/
+html.custom-cursor-active body { cursor: none; }
+html.custom-cursor-active *  { cursor: none !important; }
+
+/* ── Accessible focus states ── */
+/* Visible only for keyboard focus, so custom-cursor mouse users don't see a
+   ring on every click while keyboard users always get one. */
+:focus {
+  outline: none;
 }
-::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.03);
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 2px;
+:focus-visible {
+  outline: 2px solid #c084fc !important;
+  outline-offset: 2px !important;
+  border-radius: 6px;
 }
 
-/* Mic pulse ring */
-@keyframes mic-ring {
-  0% { transform: scale(1); opacity: 0.8; }
-  100% { transform: scale(1.6); opacity: 0; }
+/* ── Motion & data-saving preferences ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
-.mic-ring {
-  animation: mic-ring 1.2s ease-out infinite;
+/* ── Screen-reader-only utility ── */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-/* Waveform bar */
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.25); border-radius: 2px; }
+
+/* ══════════════════════════════════════
+   UNIVERSE BACKGROUND
+══════════════════════════════════════ */
+.universe-bg {
+  background:
+    /* Central nebula core */
+    radial-gradient(ellipse 70% 55% at 50% 60%,  rgba(109,40,217,0.22) 0%,  transparent 65%),
+    /* Left nebula cloud */
+    radial-gradient(ellipse 45% 35% at 10% 70%,  rgba(124,58,237,0.14) 0%,  transparent 60%),
+    /* Right nebula cloud */
+    radial-gradient(ellipse 40% 30% at 90% 75%,  rgba(168,85,247,0.10) 0%,  transparent 55%),
+    /* Top violet haze */
+    radial-gradient(ellipse 80% 30% at 50% 0%,   rgba(88,28,135,0.18)  0%,  transparent 70%),
+    /* Base deep space */
+    linear-gradient(180deg, #030108 0%, #060311 25%, #08041a 55%, #0a0520 80%, #0c0625 100%);
+}
+
+/* ══════════════════════════════════════
+   STARS
+══════════════════════════════════════ */
+.stars {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.star {
+  position: absolute;
+  border-radius: 50%;
+  background: white;
+  animation: twinkle var(--dur, 3s) ease-in-out infinite var(--delay, 0s);
+}
+/* Some stars get a purple tint */
+.star.purple { background: #e9d5ff; }
+.star.blue   { background: #ddd6fe; }
+
+@keyframes twinkle {
+  0%, 100% { opacity: 0.12; transform: scale(1); }
+  50%       { opacity: 1;    transform: scale(1.5); }
+}
+
+/* Shooting star */
+@keyframes shoot {
+  0%   { transform: translateX(0) translateY(0) rotate(-35deg); opacity: 1; width: 80px; }
+  100% { transform: translateX(300px) translateY(120px) rotate(-35deg); opacity: 0; width: 4px; }
+}
+.shooting-star {
+  position: absolute;
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgba(255,255,255,0.8), transparent);
+  border-radius: 999px;
+  animation: shoot 2.5s ease-out infinite;
+}
+
+/* ══════════════════════════════════════
+   NEBULA GLOW (bottom ambient)
+══════════════════════════════════════ */
+.nebula-glow {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 280px;
+  background: linear-gradient(to top,
+    rgba(109,40,217,0.16) 0%,
+    rgba(124,58,237,0.06) 40%,
+    transparent 100%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ══════════════════════════════════════
+   DESTINATION PILLS
+══════════════════════════════════════ */
+.dest-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(168,85,247,0.2);
+  background: rgba(124,58,237,0.08);
+  font-size: 12px;
+  color: rgba(233,213,255,0.65);
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+  cursor: default;
+}
+.dest-pill:hover {
+  background: rgba(124,58,237,0.18);
+  border-color: rgba(168,85,247,0.45);
+  color: #f3e8ff;
+}
+
+/* ══════════════════════════════════════
+   GLASS CARD
+══════════════════════════════════════ */
+.glass {
+  background: rgba(124,58,237,0.05);
+  border: 1px solid rgba(168,85,247,0.12);
+  backdrop-filter: blur(14px);
+}
+.glass-bright {
+  background: rgba(168,85,247,0.08);
+  border: 1px solid rgba(196,132,252,0.18);
+  backdrop-filter: blur(14px);
+}
+
+/* ══════════════════════════════════════
+   ANIMATIONS
+══════════════════════════════════════ */
+
+/* Wave bar (orb waveform) */
 @keyframes wave-bar {
-  0%, 100% { height: 4px; }
-  50% { height: 100%; }
+  0%, 100% { transform: scaleY(0.12); }
+  50%       { transform: scaleY(1); }
 }
-
 .wave-bar {
-  animation: wave-bar 0.8s ease-in-out infinite;
+  transform-origin: center;
+  animation: wave-bar 0.65s ease-in-out infinite;
 }
-.wave-bar:nth-child(2) { animation-delay: 0.1s; }
-.wave-bar:nth-child(3) { animation-delay: 0.2s; }
-.wave-bar:nth-child(4) { animation-delay: 0.3s; }
-.wave-bar:nth-child(5) { animation-delay: 0.15s; }
 
-/* Slide in from bottom */
+/* Orb ring burst */
+@keyframes orb-ring {
+  0%   { transform: scale(1);   opacity: 0.7; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+.orb-ring   { animation: orb-ring 1.6s ease-out infinite; }
+.orb-ring-2 { animation: orb-ring 1.6s ease-out infinite 0.5s; }
+.orb-ring-3 { animation: orb-ring 1.6s ease-out infinite 1s; }
+
+/* Slide up */
 @keyframes slide-up {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
+.slide-up { animation: slide-up 0.3s ease-out forwards; }
 
-.slide-up {
-  animation: slide-up 0.25s ease-out forwards;
+/* Fade in */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
-
-/* Score bar fill */
-@keyframes fill-bar {
-  from { width: 0%; }
-  to { width: var(--target-width); }
-}
-
-.score-bar-fill {
-  animation: fill-bar 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-}
+.fade-in { animation: fade-in 0.4s ease-out forwards; }
 
 /* Pulse dot */
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.85); }
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.3; transform: scale(0.7); }
 }
+.pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
 
-.pulse-dot {
-  animation: pulse-dot 1.5s ease-in-out infinite;
+/* Orbit ring (decorative around orb) */
+@keyframes orbit-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
+.orbit { animation: orbit-spin 8s linear infinite; }
+.orbit-rev { animation: orbit-spin 12s linear infinite reverse; }
 
-/* Glow effect */
-.glow-blue {
-  box-shadow: 0 0 20px rgba(79, 110, 247, 0.4);
+/* Floating planet bob */
+@keyframes bob {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-8px); }
 }
+.bob { animation: bob 4s ease-in-out infinite; }
 
-.glow-red {
-  box-shadow: 0 0 20px rgba(239, 68, 68, 0.5);
+/* Glow shadows */
+.glow-purple { box-shadow: 0 0 40px rgba(124,58,237,0.55), 0 0 80px rgba(109,40,217,0.2); }
+.glow-violet { box-shadow: 0 0 30px rgba(167,139,250,0.4); }
+.glow-white  { box-shadow: 0 0 20px rgba(255,255,255,0.15); }
+
+/* Thinking spinner */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
