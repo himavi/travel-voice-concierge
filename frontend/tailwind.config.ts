@@ -10,12 +10,12 @@ const config: Config = {
     extend: {
       colors: {
         brand: {
-          50: "#f0f4ff",
-          100: "#e0e9ff",
-          500: "#4f6ef7",
-          600: "#3b5bdb",
-          700: "#2f4acf",
-          900: "#1a2a8a",
+          50: "#fff3ee",
+          100: "#ffe1d5",
+          500: "#ff6b4a",
+          600: "#f0563a",
+          700: "#e8523a",
+          900: "#8a2e1d",
         },
       },
       animation: {

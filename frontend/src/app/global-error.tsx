@@ -17,19 +17,19 @@ export default function GlobalError({
     <html lang="en">
       <body>
         <div
-          className="min-h-[100dvh] flex flex-col items-center justify-center px-6 text-center text-white"
-          style={{ background: "#05030f" }}
+          className="min-h-[100dvh] flex flex-col items-center justify-center px-6 text-center"
+          style={{ background: "#FDF8F1" }}
         >
-          <h1 className="text-lg font-semibold mb-2" style={{ color: "#f3e8ff" }}>
+          <h1 className="text-lg font-semibold mb-2" style={{ color: "#3A2E22" }}>
             Something went wrong
           </h1>
-          <p className="text-sm max-w-xs mb-6" style={{ color: "#9c8fc0" }}>
+          <p className="text-sm max-w-xs mb-6" style={{ color: "#7A6248" }}>
             The app failed to load. Please try again.
           </p>
           <button
             onClick={reset}
             className="px-6 py-2.5 rounded-xl text-sm font-semibold text-white"
-            style={{ background: "linear-gradient(135deg, #7c3aed, #a855f7)" }}
+            style={{ background: "linear-gradient(135deg, #FF6B4A, #F5A623)" }}
           >
             Try again
           </button>

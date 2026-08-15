@@ -28,25 +28,27 @@ export function HandoffCard({ card, onDismiss }: Props) {
       aria-modal="true"
       aria-labelledby="handoff-title"
     >
-      <div className="w-full max-w-md bg-[#0d1528] border border-red-500/30 rounded-2xl shadow-2xl glow-red overflow-hidden slide-up">
+      <div className="w-full max-w-md bg-white border rounded-2xl overflow-hidden slide-up"
+        style={{ borderColor: "rgba(255,107,74,0.25)", boxShadow: "0 20px 60px rgba(232,82,58,0.18), 0 4px 16px rgba(58,46,34,0.1)" }}>
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 bg-red-500/10 border-b border-red-500/20">
+        <div className="flex items-center justify-between px-5 py-4 border-b"
+          style={{ background: "rgba(255,107,74,0.08)", borderColor: "rgba(255,107,74,0.18)" }}>
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center">
-              <UserCheck className="w-4 h-4 text-red-400" aria-hidden="true" />
+            <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "rgba(255,107,74,0.16)" }}>
+              <UserCheck className="w-4 h-4" style={{ color: "#E8523A" }} aria-hidden="true" />
             </div>
             <div>
-              <p id="handoff-title" className="font-semibold text-red-300 text-sm">Human Handoff Request</p>
-              <p className="text-xs text-gray-500">Customer wants to speak with an agent</p>
+              <p id="handoff-title" className="font-semibold text-sm" style={{ color: "#C2401F" }}>Human Handoff Request</p>
+              <p className="text-xs" style={{ color: "#7A6248" }}>Customer wants to speak with an agent</p>
             </div>
           </div>
           <button
             ref={closeBtnRef}
             onClick={onDismiss}
             aria-label="Dismiss handoff request"
-            className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-[rgba(58,46,34,0.06)]"
           >
-            <X className="w-4 h-4 text-gray-400" aria-hidden="true" />
+            <X className="w-4 h-4" style={{ color: "#7A6248" }} aria-hidden="true" />
           </button>
         </div>
 
@@ -61,25 +63,26 @@ export function HandoffCard({ card, onDismiss }: Props) {
               { label: "Travel", value: card.travel_month || "—" },
               { label: "Travelers", value: card.travelers ? `${card.travelers}` : "—" },
             ].map((item) => (
-              <div key={item.label} className="bg-white/4 rounded-lg px-3 py-2">
-                <p className="text-xs text-gray-500">{item.label}</p>
-                <p className="text-sm font-medium text-white">{item.value}</p>
+              <div key={item.label} className="rounded-lg px-3 py-2" style={{ background: "rgba(58,46,34,0.04)" }}>
+                <p className="text-xs" style={{ color: "#7A6248" }}>{item.label}</p>
+                <p className="text-sm font-medium" style={{ color: "#3A2E22" }}>{item.value}</p>
               </div>
             ))}
           </div>
 
           {/* Conversation summary */}
           {card.conversation_summary && (
-            <div className="bg-white/4 rounded-lg px-3 py-2.5">
-              <p className="text-xs text-gray-500 mb-1">Summary for agent</p>
-              <p className="text-sm text-gray-300 leading-relaxed">{card.conversation_summary}</p>
+            <div className="rounded-lg px-3 py-2.5" style={{ background: "rgba(58,46,34,0.04)" }}>
+              <p className="text-xs mb-1" style={{ color: "#7A6248" }}>Summary for agent</p>
+              <p className="text-sm leading-relaxed" style={{ color: "#5C4A38" }}>{card.conversation_summary}</p>
             </div>
           )}
 
           {/* Lead score */}
-          <div className="flex items-center justify-between bg-orange-500/10 border border-orange-500/20 rounded-lg px-3 py-2.5">
-            <p className="text-sm text-orange-300 font-medium">Lead Score</p>
-            <p className="text-2xl font-bold text-orange-400">{card.lead_score}<span className="text-sm text-gray-500 font-normal">/100</span></p>
+          <div className="flex items-center justify-between rounded-lg px-3 py-2.5 border"
+            style={{ background: "rgba(245,166,35,0.08)", borderColor: "rgba(245,166,35,0.25)" }}>
+            <p className="text-sm font-medium" style={{ color: "#8A5C10" }}>Lead Score</p>
+            <p className="text-2xl font-bold" style={{ color: "#B0521A" }}>{card.lead_score}<span className="text-sm font-normal" style={{ color: "#7A6248" }}>/100</span></p>
           </div>
         </div>
 
@@ -95,7 +98,8 @@ export function HandoffCard({ card, onDismiss }: Props) {
           </button>
           <button
             onClick={onDismiss}
-            className="flex-1 py-2.5 bg-white/6 hover:bg-white/10 rounded-xl text-sm font-medium text-gray-300 transition-colors"
+            className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-colors hover:bg-[rgba(58,46,34,0.08)]"
+            style={{ background: "rgba(58,46,34,0.04)", color: "#5C4A38" }}
           >
             Dismiss
           </button>

@@ -89,7 +89,7 @@ export function CustomCursor() {
         style={{
           position: "fixed", top: -4, left: -4,
           width: 8, height: 8, borderRadius: "50%",
-          background: "rgba(167,139,250,0.3)",
+          background: "rgba(255,166,130,0.35)",
           filter: "blur(2px)",
           pointerEvents: "none", zIndex: 9999996,
           willChange: "transform",
@@ -102,7 +102,7 @@ export function CustomCursor() {
         style={{
           position: "fixed", top: -5, left: -5,
           width: 10, height: 10, borderRadius: "50%",
-          background: "rgba(216,180,254,0.45)",
+          background: "rgba(255,138,92,0.5)",
           filter: "blur(1px)",
           pointerEvents: "none", zIndex: 9999997,
           willChange: "transform",
@@ -129,8 +129,8 @@ export function CustomCursor() {
             marginLeft: "-20px",
             marginTop: "-20px",
             filter: hovering
-              ? "drop-shadow(0 0 6px #e9d5ff) drop-shadow(0 0 12px #a855f7)"
-              : "drop-shadow(0 0 4px #c084fc) drop-shadow(0 0 8px #7c3aed)",
+              ? "drop-shadow(0 0 6px #FFE0B8) drop-shadow(0 0 12px #F5A623)"
+              : "drop-shadow(0 0 4px #FFD08A) drop-shadow(0 0 8px #FF6B4A)",
           }}
         >
           {/*
@@ -139,9 +139,9 @@ export function CustomCursor() {
           */}
           <path
             d="M21 16v-2l-8-5V3.5A1.5 1.5 0 0 0 11.5 2A1.5 1.5 0 0 0 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1l3.5 1v-1.5L13 19v-5.5z"
-            fill="white"
-            stroke="rgba(192,132,252,0.6)"
-            strokeWidth="0.3"
+            fill="#E8523A"
+            stroke="white"
+            strokeWidth="0.6"
           />
         </svg>
       </div>

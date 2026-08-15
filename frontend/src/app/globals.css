@@ -3,24 +3,31 @@
 @tailwind utilities;
 
 :root {
-  --void:       #05030f;
-  --space-1:    #080612;
-  --space-2:    #0d0920;
-  --space-3:    #110c2a;
-  --nebula-1:   #7c3aed;  /* violet-600 */
-  --nebula-2:   #a855f7;  /* purple-500 */
-  --nebula-3:   #c084fc;  /* purple-400 */
-  --nebula-glow:#6d28d9;
-  --star-white: #f8f4ff;
-  --text-main:  #f0ebff;
-  --text-dim:   #9c8fc0;
+  --cream:      #FDF8F1;  /* page background base */
+  --cream-2:    #FBEEDD;  /* deeper warm tint for gradients */
+  --paper:      #FFFFFF;  /* card surface */
+  --border:     #F0E1CC;
+
+  --ink:        #3A2E22;  /* primary text */
+  --ink-2:      #5C4A38;  /* secondary text */
+  --ink-dim:    #7A6248;  /* labels, uppercase, dim text */
+  --ink-faint:  #96805C;  /* placeholders, empty states */
+
+  --coral:      #FF6B4A;  /* primary accent */
+  --coral-dark: #E8523A;  /* accent hover / deep warm red */
+  --amber:      #F5A623;  /* secondary accent */
+  --amber-soft: #FFD08A;  /* light accent tint */
+
+  --listen-red: #E5484D;  /* mic actively recording */
+  --thinking:   #7A5F3A;  /* agent processing */
+  --success:    #3FA796;  /* positive / confirmed state */
 }
 
 * { box-sizing: border-box; }
 
 body {
-  background: var(--void);
-  color: var(--text-main);
+  background: var(--cream);
+  color: var(--ink);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -42,7 +49,7 @@ html.custom-cursor-active *  { cursor: none !important; }
   outline: none;
 }
 :focus-visible {
-  outline: 2px solid #c084fc !important;
+  outline: 2px solid var(--coral-dark) !important;
   outline-offset: 2px !important;
   border-radius: 6px;
 }
@@ -71,73 +78,31 @@ html.custom-cursor-active *  { cursor: none !important; }
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.25); border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: rgba(232,82,58,0.22); border-radius: 2px; }
 
 /* ══════════════════════════════════════
-   UNIVERSE BACKGROUND
+   APP BACKGROUND — soft warm daylight, not a flat fill
 ══════════════════════════════════════ */
-.universe-bg {
+.app-bg {
   background:
-    /* Central nebula core */
-    radial-gradient(ellipse 70% 55% at 50% 60%,  rgba(109,40,217,0.22) 0%,  transparent 65%),
-    /* Left nebula cloud */
-    radial-gradient(ellipse 45% 35% at 10% 70%,  rgba(124,58,237,0.14) 0%,  transparent 60%),
-    /* Right nebula cloud */
-    radial-gradient(ellipse 40% 30% at 90% 75%,  rgba(168,85,247,0.10) 0%,  transparent 55%),
-    /* Top violet haze */
-    radial-gradient(ellipse 80% 30% at 50% 0%,   rgba(88,28,135,0.18)  0%,  transparent 70%),
-    /* Base deep space */
-    linear-gradient(180deg, #030108 0%, #060311 25%, #08041a 55%, #0a0520 80%, #0c0625 100%);
+    /* Soft sunrise wash, upper right */
+    radial-gradient(ellipse 55% 40% at 85% 0%,   rgba(255,208,138,0.35) 0%, transparent 60%),
+    /* Coral warmth, lower left */
+    radial-gradient(ellipse 50% 40% at 8% 90%,   rgba(255,107,74,0.14)  0%, transparent 60%),
+    /* Amber haze, center */
+    radial-gradient(ellipse 70% 45% at 50% 30%,  rgba(245,166,35,0.08)  0%, transparent 65%),
+    /* Base cream */
+    linear-gradient(180deg, #FFFBF4 0%, #FDF8F1 40%, #FBEEDD 100%);
 }
 
-/* ══════════════════════════════════════
-   STARS
-══════════════════════════════════════ */
-.stars {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 0;
-}
-.star {
-  position: absolute;
-  border-radius: 50%;
-  background: white;
-  animation: twinkle var(--dur, 3s) ease-in-out infinite var(--delay, 0s);
-}
-/* Some stars get a purple tint */
-.star.purple { background: #e9d5ff; }
-.star.blue   { background: #ddd6fe; }
-
-@keyframes twinkle {
-  0%, 100% { opacity: 0.12; transform: scale(1); }
-  50%       { opacity: 1;    transform: scale(1.5); }
-}
-
-/* Shooting star */
-@keyframes shoot {
-  0%   { transform: translateX(0) translateY(0) rotate(-35deg); opacity: 1; width: 80px; }
-  100% { transform: translateX(300px) translateY(120px) rotate(-35deg); opacity: 0; width: 4px; }
-}
-.shooting-star {
-  position: absolute;
-  height: 1px;
-  background: linear-gradient(to right, transparent, rgba(255,255,255,0.8), transparent);
-  border-radius: 999px;
-  animation: shoot 2.5s ease-out infinite;
-}
-
-/* ══════════════════════════════════════
-   NEBULA GLOW (bottom ambient)
-══════════════════════════════════════ */
-.nebula-glow {
+/* Ambient warm glow along the bottom edge, echoes a horizon line */
+.ambient-glow {
   position: absolute;
   bottom: 0; left: 0; right: 0;
-  height: 280px;
+  height: 240px;
   background: linear-gradient(to top,
-    rgba(109,40,217,0.16) 0%,
-    rgba(124,58,237,0.06) 40%,
+    rgba(255,107,74,0.08) 0%,
+    rgba(245,166,35,0.04) 45%,
     transparent 100%);
   pointer-events: none;
   z-index: 0;
@@ -152,32 +117,34 @@ html.custom-cursor-active *  { cursor: none !important; }
   gap: 6px;
   padding: 6px 14px;
   border-radius: 999px;
-  border: 1px solid rgba(168,85,247,0.2);
-  background: rgba(124,58,237,0.08);
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.7);
   font-size: 12px;
-  color: rgba(233,213,255,0.65);
+  color: var(--ink-dim);
   backdrop-filter: blur(8px);
   transition: all 0.2s ease;
   cursor: default;
 }
 .dest-pill:hover {
-  background: rgba(124,58,237,0.18);
-  border-color: rgba(168,85,247,0.45);
-  color: #f3e8ff;
+  background: #FFF3E6;
+  border-color: rgba(255,107,74,0.4);
+  color: var(--ink);
 }
 
 /* ══════════════════════════════════════
-   GLASS CARD
+   CARD SURFACES
 ══════════════════════════════════════ */
 .glass {
-  background: rgba(124,58,237,0.05);
-  border: 1px solid rgba(168,85,247,0.12);
+  background: rgba(255,255,255,0.72);
+  border: 1px solid var(--border);
   backdrop-filter: blur(14px);
+  box-shadow: 0 4px 16px rgba(232,82,58,0.06);
 }
 .glass-bright {
-  background: rgba(168,85,247,0.08);
-  border: 1px solid rgba(196,132,252,0.18);
+  background: rgba(255,255,255,0.9);
+  border: 1px solid rgba(255,107,74,0.18);
   backdrop-filter: blur(14px);
+  box-shadow: 0 4px 20px rgba(232,82,58,0.08);
 }
 
 /* ══════════════════════════════════════
@@ -232,7 +199,7 @@ html.custom-cursor-active *  { cursor: none !important; }
 .orbit { animation: orbit-spin 8s linear infinite; }
 .orbit-rev { animation: orbit-spin 12s linear infinite reverse; }
 
-/* Floating planet bob */
+/* Floating logo bob */
 @keyframes bob {
   0%, 100% { transform: translateY(0); }
   50%       { transform: translateY(-8px); }
@@ -240,9 +207,9 @@ html.custom-cursor-active *  { cursor: none !important; }
 .bob { animation: bob 4s ease-in-out infinite; }
 
 /* Glow shadows */
-.glow-purple { box-shadow: 0 0 40px rgba(124,58,237,0.55), 0 0 80px rgba(109,40,217,0.2); }
-.glow-violet { box-shadow: 0 0 30px rgba(167,139,250,0.4); }
-.glow-white  { box-shadow: 0 0 20px rgba(255,255,255,0.15); }
+.glow-coral { box-shadow: 0 8px 32px rgba(255,107,74,0.35), 0 2px 8px rgba(232,82,58,0.15); }
+.glow-amber { box-shadow: 0 8px 28px rgba(245,166,35,0.3); }
+.glow-soft  { box-shadow: 0 4px 20px rgba(58,46,34,0.08); }
 
 /* Thinking spinner */
 @keyframes spin-slow {

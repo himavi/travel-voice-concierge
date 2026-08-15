@@ -16,20 +16,20 @@ function Field({ icon: Icon, label, value }: {
       filled ? "opacity-100" : "opacity-40"
     )}
     style={{
-      background: filled ? "rgba(124,58,237,0.08)" : "transparent",
-      border: filled ? "1px solid rgba(168,85,247,0.18)" : "1px dashed rgba(168,85,247,0.1)",
+      background: filled ? "rgba(255,107,74,0.07)" : "transparent",
+      border: filled ? "1px solid rgba(255,107,74,0.18)" : "1px dashed rgba(232,82,58,0.12)",
     }}>
       <Icon className="w-3.5 h-3.5 flex-shrink-0" aria-hidden="true"
-        style={{ color: filled ? "#a855f7" : "#4b3f72" }} />
+        style={{ color: filled ? "#E8523A" : "#96805C" }} />
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] leading-none mb-0.5" style={{ color: "#6b5c8a" }}>{label}</p>
-        <p className="text-xs font-medium truncate" style={{ color: filled ? "#e9d5ff" : "#4b3f72" }}>
+        <p className="text-[10px] leading-none mb-0.5" style={{ color: "#7A6248" }}>{label}</p>
+        <p className="text-xs font-medium truncate" style={{ color: filled ? "#3A2E22" : "#96805C" }}>
           {value || "—"}
         </p>
       </div>
       {filled && (
         <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 pulse-dot" aria-hidden="true"
-          style={{ background: "#a855f7" }} />
+          style={{ background: "#FF6B4A" }} />
       )}
     </div>
   );
@@ -38,7 +38,7 @@ function Field({ icon: Icon, label, value }: {
 export function ProfilePanel({ profile }: Props) {
   return (
     <div className="space-y-1.5">
-      <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: "#6b5c8a" }}>
+      <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: "#7A6248" }}>
         Customer Profile
       </p>
       <Field icon={MapPin}     label="Destination"   value={profile.destination} />
@@ -54,8 +54,8 @@ export function ProfilePanel({ profile }: Props) {
 
       {profile.customer_name && (
         <div className="mt-2 px-3 py-2 rounded-lg"
-          style={{ background: "rgba(124,58,237,0.12)", border: "1px solid rgba(168,85,247,0.2)" }}>
-          <p className="text-xs font-medium" style={{ color: "#c084fc" }}>
+          style={{ background: "rgba(255,107,74,0.10)", border: "1px solid rgba(255,107,74,0.22)" }}>
+          <p className="text-xs font-medium" style={{ color: "#C2401F" }}>
             Customer: {profile.customer_name}
           </p>
         </div>

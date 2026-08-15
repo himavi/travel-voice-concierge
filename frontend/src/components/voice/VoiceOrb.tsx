@@ -52,10 +52,10 @@ export function VoiceOrb({ status, onStart, onStop }: Props) {
         role="status"
         aria-live="polite"
         style={{
-          color: isListening ? "#f87171"
-               : isThinking  ? "#fbbf24"
-               : isSpeaking  ? "#c084fc"
-               : "#4b3f72",
+          color: isListening ? "#C43D33"
+               : isThinking  ? "#7A5F3A"
+               : isSpeaking  ? "#C2401F"
+               : "#96805C",
         }}>
         {isListening && "● Listening — release to send"}
         {isThinking  && "● Thinking"}
@@ -70,9 +70,9 @@ export function VoiceOrb({ status, onStart, onStop }: Props) {
         {isIdle && (
           <>
             <span className="absolute inset-[-16px] rounded-full border orbit"
-              style={{ borderColor: "rgba(168,85,247,0.1)", borderStyle: "dashed" }} />
+              style={{ borderColor: "rgba(232,82,58,0.12)", borderStyle: "dashed" }} />
             <span className="absolute inset-[-32px] rounded-full border orbit-rev"
-              style={{ borderColor: "rgba(124,58,237,0.06)", borderStyle: "dashed" }} />
+              style={{ borderColor: "rgba(232,82,58,0.07)", borderStyle: "dashed" }} />
           </>
         )}
 
@@ -80,11 +80,11 @@ export function VoiceOrb({ status, onStart, onStop }: Props) {
         {isListening && (
           <>
             <span className="absolute inset-0 rounded-full orb-ring"
-              style={{ background: "rgba(239,68,68,0.18)" }} />
+              style={{ background: "rgba(229,72,77,0.18)" }} />
             <span className="absolute inset-[-16px] rounded-full border orb-ring-2"
-              style={{ borderColor: "rgba(239,68,68,0.2)" }} />
+              style={{ borderColor: "rgba(229,72,77,0.2)" }} />
             <span className="absolute inset-[-32px] rounded-full border orb-ring-3"
-              style={{ borderColor: "rgba(239,68,68,0.1)" }} />
+              style={{ borderColor: "rgba(229,72,77,0.1)" }} />
           </>
         )}
 
@@ -92,16 +92,16 @@ export function VoiceOrb({ status, onStart, onStop }: Props) {
         {isSpeaking && (
           <>
             <span className="absolute inset-0 rounded-full orb-ring"
-              style={{ background: "rgba(168,85,247,0.2)" }} />
+              style={{ background: "rgba(245,166,35,0.2)" }} />
             <span className="absolute inset-[-16px] rounded-full border orb-ring-2"
-              style={{ borderColor: "rgba(192,132,252,0.25)" }} />
+              style={{ borderColor: "rgba(245,166,35,0.3)" }} />
           </>
         )}
 
         {/* Thinking spinner */}
         {isThinking && (
           <span className="absolute inset-[-4px] rounded-full border-2 border-transparent animate-spin"
-            style={{ borderTopColor: "#fbbf24" }} />
+            style={{ borderTopColor: "#7A5F3A" }} />
         )}
 
         {/* Main orb button */}
@@ -125,19 +125,19 @@ export function VoiceOrb({ status, onStart, onStop }: Props) {
           )}
           style={{
             background: isListening
-              ? "radial-gradient(circle at 35% 30%, #f87171, #b91c1c)"
+              ? "radial-gradient(circle at 35% 30%, #F2726B, #C43D33)"
               : isThinking
-              ? "radial-gradient(circle at 35% 30%, #374151, #1f2937)"
+              ? "radial-gradient(circle at 35% 30%, #D9C9B4, #B8A88F)"
               : isSpeaking
-              ? "radial-gradient(circle at 35% 30%, #d8b4fe, #7c3aed)"
-              : "radial-gradient(circle at 35% 30%, #c084fc, #6d28d9)",
+              ? "radial-gradient(circle at 35% 30%, #FFD08A, #F5A623)"
+              : "radial-gradient(circle at 35% 30%, #FF8A65, #E8523A)",
             boxShadow: isListening
-              ? "0 0 50px rgba(239,68,68,0.5), inset 0 1px 0 rgba(255,255,255,0.2)"
+              ? "0 0 50px rgba(229,72,77,0.45), inset 0 1px 0 rgba(255,255,255,0.25)"
               : isThinking
-              ? "0 0 20px rgba(55,65,81,0.4)"
+              ? "0 0 20px rgba(184,146,90,0.3)"
               : isSpeaking
-              ? "0 0 50px rgba(168,85,247,0.6), inset 0 1px 0 rgba(255,255,255,0.2)"
-              : "0 0 50px rgba(124,58,237,0.55), 0 0 100px rgba(109,40,217,0.2), inset 0 1px 0 rgba(255,255,255,0.15)",
+              ? "0 0 50px rgba(245,166,35,0.5), inset 0 1px 0 rgba(255,255,255,0.25)"
+              : "0 0 50px rgba(255,107,74,0.45), 0 0 100px rgba(232,82,58,0.18), inset 0 1px 0 rgba(255,255,255,0.2)",
             cursor: isThinking || isSpeaking ? "not-allowed" : "pointer",
           }}
         >
@@ -166,7 +166,7 @@ export function VoiceOrb({ status, onStart, onStop }: Props) {
             <div className="flex items-center gap-1.5">
               {[...Array(3)].map((_, i) => (
                 <div key={i} className="w-2 h-2 rounded-full pulse-dot"
-                  style={{ background: "#fbbf24", animationDelay: `${i * 0.22}s` }} />
+                  style={{ background: "#7A5F3A", animationDelay: `${i * 0.22}s` }} />
               ))}
             </div>
           )}
