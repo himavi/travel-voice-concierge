@@ -16,7 +16,7 @@ from app.models.schemas import (
     AgentResponse,
     HandoffCard,
 )
-from app.tools.lead_scorer import calculate_lead_score, get_next_priority_field, LEAD_ALERT_THRESHOLD
+from app.tools.lead_scorer import calculate_lead_score, get_next_priority_field, get_missing_fields, LEAD_ALERT_THRESHOLD
 from app.tools.visa_knowledge import get_visa_info
 from app.agent.prompts import SYSTEM_PROMPT, PROFILE_EXTRACTION_PROMPT, HANDOFF_SUMMARY_PROMPT
 
@@ -62,9 +62,18 @@ class ConversationManager:
         # (pre-extraction). That's fine because the user's raw message — the
         # thing that actually changed — is already in the history the reply
         # call reads, so the model still responds to it naturally.
+        #
+        # next_field/missing_fields are computed from pre-extraction state
+        # for the same reason, and handed to the reply call explicitly —
+        # otherwise the model has to re-infer what's still missing purely by
+        # rereading the transcript every turn, with nothing forcing it to
+        # keep going instead of drifting into open-ended chat once the
+        # conversation "feels" complete.
+        pre_next_field = get_next_priority_field(self.profile)
+        pre_missing_fields = get_missing_fields(self.profile)
         extracted, ai_text = await asyncio.gather(
             self._extract_profile(user_message),
-            self._get_ai_response(),
+            self._get_ai_response(pre_next_field, pre_missing_fields),
         )
 
         if extracted:
@@ -198,7 +207,7 @@ class ConversationManager:
 
         return updates, events
 
-    async def _get_ai_response(self) -> str:
+    async def _get_ai_response(self, next_field: str, missing_fields: list[str]) -> str:
         """Get conversational response from LLM."""
         # Build messages for the LLM
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -209,6 +218,34 @@ class ConversationManager:
             messages.append({
                 "role": "system",
                 "content": f"Current profile: {profile_context}"
+            })
+
+        # Explicitly tell the model what's still missing and what to ask
+        # next — without this it has to re-infer the gap from the raw
+        # transcript every turn, which is exactly what let conversations
+        # trail off before the profile was actually complete.
+        if missing_fields:
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"Still missing from the profile: {', '.join(missing_fields)}. "
+                    f"The conversation is NOT done until these are filled. "
+                    f"Ask about \"{next_field}\" next. If the user's last message seems to "
+                    f"have already answered it, don't just take that as given and move on — "
+                    f"extraction can miss things, so ask a quick one-line confirmation of it "
+                    f"instead (e.g. \"Just to confirm, this is a leisure trip?\") rather than "
+                    f"silently skipping to the next topic. Only move past an item once it's "
+                    f"actually gone from this missing list on a later turn."
+                ),
+            })
+        else:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "All required profile fields are captured. You can now wrap up "
+                    "naturally, offer a brief helpful summary, or ask if there's "
+                    "anything else they need."
+                ),
             })
 
         # Add conversation history (last 10 turns to keep context window lean)
