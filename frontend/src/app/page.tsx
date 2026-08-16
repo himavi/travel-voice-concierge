@@ -172,7 +172,7 @@ export default function Home() {
               color: "var(--ink-2)",
             }}>
             <span className="w-1.5 h-1.5 rounded-full bg-[#FF6B4A] pulse-dot" aria-hidden="true" />
-            AI Concierge · Powered by Groq
+            AI Concierge
           </motion.div>
 
           {/* Headline */}
