@@ -18,12 +18,12 @@ export default function GlobalError({
       <body>
         <div
           className="min-h-[100dvh] flex flex-col items-center justify-center px-6 text-center"
-          style={{ background: "#FDF8F1" }}
+          style={{ background: "#15110D" }}
         >
-          <h1 className="text-lg font-semibold mb-2" style={{ color: "#3A2E22" }}>
+          <h1 className="text-lg font-semibold mb-2" style={{ color: "#F5F1EA" }}>
             Something went wrong
           </h1>
-          <p className="text-sm max-w-xs mb-6" style={{ color: "#7A6248" }}>
+          <p className="text-sm max-w-xs mb-6" style={{ color: "#8F8878" }}>
             The app failed to load. Please try again.
           </p>
           <button

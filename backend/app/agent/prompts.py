@@ -65,6 +65,41 @@ User message: "{message}"
 Return ONLY valid JSON. If nothing relevant is found, return {{}}.
 """
 
+# Deterministic fallback question per next_field value (see
+# lead_scorer.get_next_priority_field). The reply LLM is instructed to ask
+# about the next missing field itself, but at temp>0 it occasionally wraps
+# the conversation up instead of asking anything — Groq's inference isn't
+# fully deterministic even at low temperature, so a single generation can't
+# be trusted to always comply. When that happens (reply has no "?" while a
+# field is still missing), conversation.py appends the matching line below
+# so the conversation never silently stalls, regardless of what the model did.
+FALLBACK_QUESTIONS = {
+    "destination": "So I make sure I've got it right — where are you thinking of traveling?",
+    "passport country": "Which passport do you hold?",
+    "purpose of travel": "And what's the purpose of the trip — tourism, business, or something else?",
+    "travel month or dates": "When are you planning to travel?",
+    "number of travelers": "How many of you will be traveling?",
+    "whether they need a visa": "Would you like me to check the visa requirement for you?",
+    "exact travel dates": "Do you have exact travel dates in mind yet?",
+    "approximate budget": "Do you have an approximate budget in mind?",
+}
+
+# A "?" alone isn't enough to know the model actually asked about next_field —
+# it might ask something else entirely (e.g. "want me to start the visa
+# process?" instead of asking the still-missing purpose). These keyword
+# lists let conversation.py check the reply is actually on-topic for the
+# field it was told to ask about before deciding the fallback is unnecessary.
+FALLBACK_KEYWORDS = {
+    "destination": ["destination", "where are you", "where would you", "which country"],
+    "passport country": ["passport", "nationality", "citizen"],
+    "purpose of travel": ["purpose", "tourism", "leisure", "business", "study", "education", "vacation", "holiday"],
+    "travel month or dates": ["when are you", "when do you", "which month", "what month", "what date", "which date"],
+    "number of travelers": ["how many", "traveler", "travelling alone", "traveling alone", "just you"],
+    "whether they need a visa": ["visa require", "need a visa", "visa is required", "check the visa"],
+    "exact travel dates": ["exact date", "specific date", "which date"],
+    "approximate budget": ["budget"],
+}
+
 HANDOFF_SUMMARY_PROMPT = """Based on this conversation, write a 2-sentence summary of what the customer needs.
 Be specific about their travel plans and visa requirements.
 

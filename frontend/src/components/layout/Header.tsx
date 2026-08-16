@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, WifiOff, MoreVertical, RotateCcw, Info } from "lucide-react";
+import { MessageSquare, WifiOff, MoreVertical, RotateCcw, Info, Plane } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
 
@@ -43,7 +43,7 @@ export function Header({ started, isConnected, showTranscript, onToggleTranscrip
             boxShadow: "0 0 16px rgba(255,107,74,0.5)",
           }}
         >
-          <span className="text-lg" aria-hidden="true">✈️</span>
+          <Plane className="w-4 h-4 text-white" fill="currentColor" strokeWidth={0} aria-hidden="true" />
         </div>
         <div>
           <h1 className="text-sm font-bold tracking-wide font-display" style={{ color: "var(--ink)" }}>

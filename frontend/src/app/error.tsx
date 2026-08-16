@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { AlertTriangle } from "lucide-react";
 
 export default function Error({
   error,
@@ -16,18 +17,18 @@ export default function Error({
   return (
     <div
       className="min-h-[100dvh] flex flex-col items-center justify-center px-6 text-center"
-      style={{ background: "#FDF8F1" }}
+      style={{ background: "var(--canvas)" }}
     >
       <div
         className="w-14 h-14 rounded-full flex items-center justify-center mb-5"
-        style={{ background: "rgba(229,72,77,0.1)", border: "1px solid rgba(229,72,77,0.25)" }}
+        style={{ background: "rgba(240,82,90,0.1)", border: "1px solid rgba(240,82,90,0.25)" }}
       >
-        <span className="text-2xl" aria-hidden="true">⚠️</span>
+        <AlertTriangle className="w-6 h-6" style={{ color: "#F0838A" }} aria-hidden="true" />
       </div>
-      <h1 className="text-lg font-semibold mb-2" style={{ color: "#3A2E22" }}>
+      <h1 className="text-lg font-semibold mb-2 font-display" style={{ color: "var(--ink)" }}>
         Something went wrong
       </h1>
-      <p className="text-sm max-w-xs mb-6" style={{ color: "#7A6248" }}>
+      <p className="text-sm max-w-xs mb-6 leading-relaxed" style={{ color: "var(--ink-dim)" }}>
         The concierge hit a snag. You can try again — your session isn&apos;t lost.
       </p>
       <button

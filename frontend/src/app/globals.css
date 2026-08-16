@@ -53,16 +53,6 @@ body {
   font-family: var(--font-display), var(--font-body), sans-serif;
 }
 
-/*
-  The custom cursor (see CustomCursor.tsx) only hides the native cursor once
-  it has confirmed — via JS — that the device has a fine pointer and the user
-  hasn't requested reduced motion. It marks that state by adding this class to
-  <html>, so touch, keyboard, and reduced-motion users always keep a normal,
-  visible cursor.
-*/
-html.custom-cursor-active body { cursor: none; }
-html.custom-cursor-active *  { cursor: none !important; }
-
 /* ── Accessible focus states ── */
 /* Visible only for keyboard focus, so custom-cursor mouse users don't see a
    ring on every click while keyboard users always get one. */

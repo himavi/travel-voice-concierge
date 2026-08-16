@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Space_Grotesk, Inter } from "next/font/google";
-import dynamic from "next/dynamic";
 import "./globals.css";
 
 // Self-hosted via next/font — no external CDN request, zero layout shift,
@@ -18,12 +17,6 @@ const bodyFont = Inter({
   variable: "--font-body",
   display: "swap",
 });
-
-// Load cursor only on client — it uses browser APIs
-const CustomCursor = dynamic(
-  () => import("@/components/CustomCursor").then(m => ({ default: m.CustomCursor })),
-  { ssr: false }
-);
 
 export const metadata: Metadata = {
   title: "Atlys Travel Concierge — AI Voice Agent",
@@ -45,7 +38,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`}>
       <body>
-        <CustomCursor />
         {children}
       </body>
     </html>

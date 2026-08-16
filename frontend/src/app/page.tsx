@@ -12,7 +12,7 @@ import { LeadScore } from "@/components/dashboard/LeadScore";
 import { DecisionTrace } from "@/components/dashboard/DecisionTrace";
 import { VisaInsight } from "@/components/dashboard/VisaInsight";
 import { HandoffCard } from "@/components/dashboard/HandoffCard";
-import { ChevronUp } from "lucide-react";
+import { ChevronUp, Mic, Map, Zap, Handshake, AlertTriangle, Globe2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
 
@@ -28,12 +28,19 @@ const DESTINATIONS = [
 ];
 
 const intentLabel: Record<string, string> = {
-  visa_inquiry:  "🛂 Visa Inquiry",
-  trip_planning: "✈️ Trip Planning",
-  cost_inquiry:  "💰 Cost Inquiry",
-  general_info:  "⭐ General Info",
-  human_handoff: "🤝 Human Handoff",
+  visa_inquiry:  "Visa Inquiry",
+  trip_planning: "Trip Planning",
+  cost_inquiry:  "Cost Inquiry",
+  general_info:  "General Info",
+  human_handoff: "Human Handoff",
 };
+
+const FEATURES = [
+  { Icon: Mic, label: "Voice AI" },
+  { Icon: Map, label: "Visa info" },
+  { Icon: Zap, label: "Instant" },
+  { Icon: Handshake, label: "Handoff" },
+];
 
 export default function Home() {
   const {
@@ -93,7 +100,10 @@ export default function Home() {
             className="relative z-10 mx-4 mt-3 px-4 py-2.5 rounded-xl text-sm border flex-shrink-0 overflow-hidden"
             style={{ background: "rgba(240,82,90,0.1)", borderColor: "rgba(240,82,90,0.3)", color: "#F0838A" }}
             role="alert">
-            <span aria-hidden="true">⚠️</span> {error}
+            <span className="inline-flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" aria-hidden="true" />
+              {error}
+            </span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -186,7 +196,7 @@ export default function Home() {
             }}
           >
             <span className="relative z-10 flex items-center gap-2">
-              <span className="text-base" aria-hidden="true">🎙️</span>
+              <Mic className="w-4 h-4" aria-hidden="true" />
               {isStarting ? "Launching..." : "Start Talking"}
             </span>
             {/* Shimmer */}
@@ -207,14 +217,15 @@ export default function Home() {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5, delay: 0.55 }}
             className="flex flex-wrap justify-center gap-6 sm:gap-8 mt-9">
-            {[
-              { icon: "🎙️", label: "Voice AI" },
-              { icon: "🗺️", label: "Visa info" },
-              { icon: "⚡", label: "Instant" },
-              { icon: "🤝", label: "Handoff" },
-            ].map(f => (
-              <div key={f.label} className="text-center space-y-1">
-                <div className="text-xl" aria-hidden="true">{f.icon}</div>
+            {FEATURES.map(f => (
+              <div key={f.label} className="text-center space-y-2">
+                <div
+                  className="w-9 h-9 rounded-full flex items-center justify-center mx-auto"
+                  style={{ background: "rgba(255,107,74,0.1)", border: "1px solid rgba(255,107,74,0.22)" }}
+                  aria-hidden="true"
+                >
+                  <f.Icon className="w-4 h-4" style={{ color: "#FF8A65" }} />
+                </div>
                 <p className="text-[11px]" style={{ color: "var(--ink-dim)" }}>{f.label}</p>
               </div>
             ))}
@@ -270,9 +281,12 @@ export default function Home() {
                       borderColor: "rgba(255,107,74,0.28)",
                       color: "var(--ink)",
                     }}>
-                    <span className="text-base" aria-hidden="true">
-                      {DESTINATIONS.find(d => d.name.toLowerCase() === profile.destination?.toLowerCase())?.flag || "🌍"}
-                    </span>
+                    {(() => {
+                      const flag = DESTINATIONS.find(d => d.name.toLowerCase() === profile.destination?.toLowerCase())?.flag;
+                      return flag
+                        ? <span className="text-base" aria-hidden="true">{flag}</span>
+                        : <Globe2 className="w-4 h-4" style={{ color: "#FF8A65" }} aria-hidden="true" />;
+                    })()}
                     <span className="font-semibold">{profile.destination}</span>
                     {profile.travel_month && (
                       <span style={{ color: "var(--ink-dim)" }}>· {profile.travel_month}</span>

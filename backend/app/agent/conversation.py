@@ -18,7 +18,7 @@ from app.models.schemas import (
 )
 from app.tools.lead_scorer import calculate_lead_score, get_next_priority_field, get_missing_fields, LEAD_ALERT_THRESHOLD
 from app.tools.visa_knowledge import get_visa_info
-from app.agent.prompts import SYSTEM_PROMPT, PROFILE_EXTRACTION_PROMPT, HANDOFF_SUMMARY_PROMPT
+from app.agent.prompts import SYSTEM_PROMPT, PROFILE_EXTRACTION_PROMPT, HANDOFF_SUMMARY_PROMPT, FALLBACK_QUESTIONS, FALLBACK_KEYWORDS
 
 load_dotenv()
 
@@ -123,6 +123,22 @@ class ConversationManager:
             f"Next priority field: {next_field}",
             field=next_field,
         ))
+
+        # Step 5b: Deterministic safety net — the model is instructed to ask
+        # about next_field, but at temp>0 it sometimes ignores that: either
+        # wrapping the conversation up with no question at all, or asking
+        # about something else entirely (e.g. "want me to start the visa
+        # process?" instead of the still-missing purpose). A bare "?" check
+        # only catches the first case; checking for topic keywords catches
+        # both. Rather than trust a second LLM call to fix what the first one
+        # got wrong, append a fixed question so the conversation always keeps
+        # moving toward a complete profile.
+        fallback_q = FALLBACK_QUESTIONS.get(next_field)
+        if fallback_q:
+            keywords = FALLBACK_KEYWORDS.get(next_field, [])
+            on_topic = any(k in ai_text.lower() for k in keywords)
+            if not on_topic:
+                ai_text = f"{ai_text.rstrip()} {fallback_q}"
 
         # Step 6: Add assistant message to history
         self.history.append(ConversationMessage(role="assistant", content=ai_text))
