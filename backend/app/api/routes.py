@@ -191,12 +191,29 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     conv = sessions[session_id]
 
-    # Send initial greeting
-    greeting = "Hi there! I'm Aria, your travel concierge. What's your name?"
-    from app.models.schemas import ConversationMessage
-    conv.history.append(ConversationMessage(role="assistant", content=greeting))
+    # Send initial greeting — spoken, not just text, since this is a
+    # voice-first flow and a silent transcript-only greeting means the user
+    # never actually hears Aria ask for their name before they start talking.
+    # Gated on empty history (not the "session not in `sessions`" check above)
+    # because the frontend always creates the session via POST /api/sessions
+    # before opening the socket, so by the time we get here the session
+    # already exists — history is what actually distinguishes a fresh session
+    # from a reconnect, and a reconnect must NOT replay the greeting audio
+    # over whatever the user is mid-conversation doing.
+    if not conv.history:
+        greeting = "Hi there! I'm Aria, your travel concierge. What's your name?"
+        from app.models.schemas import ConversationMessage
+        conv.history.append(ConversationMessage(role="assistant", content=greeting))
+        await manager.send_transcript(session_id, "assistant", greeting)
+        await manager.send_status(session_id, "speaking")
+        try:
+            audio_bytes = await synthesize_speech(greeting)
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+            await manager.send_audio(session_id, audio_b64)
+        except Exception:
+            logger.exception("Greeting TTS failed for session %s", session_id)
+
     await manager.send_status(session_id, "idle")
-    await manager.send_transcript(session_id, "assistant", greeting)
 
     try:
         while True:
