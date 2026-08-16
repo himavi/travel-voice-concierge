@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from app.agent.conversation import ConversationManager
 from app.agent.voice import transcribe_audio, synthesize_speech
 from app.api.websocket_manager import manager
+from app.tools.notifier import send_lead_alert
 
 router = APIRouter()
 
@@ -79,11 +80,15 @@ async def send_text(session_id: str, body: TextMessage):
         handoff_card = await conv.get_handoff_card()
         await manager.send_handoff(session_id, handoff_card.model_dump())
 
+    if response.lead_alert_triggered:
+        await send_lead_alert(conv.profile)
+
     return {
         "reply": response.text,
         "profile": conv.profile.model_dump(),
         "events": [e.model_dump() for e in response.events],
         "handoff": response.handoff,
+        "lead_alert_triggered": response.lead_alert_triggered,
     }
 
 
@@ -135,6 +140,10 @@ async def send_audio(
         handoff_card = await conv.get_handoff_card()
         await manager.send_handoff(session_id, handoff_card.model_dump())
 
+    # Push hot-lead alert if needed
+    if response.lead_alert_triggered:
+        await send_lead_alert(conv.profile)
+
     # Step 3: Synthesize speech
     await manager.send_status(session_id, "speaking")
     try:
@@ -151,6 +160,7 @@ async def send_audio(
         "audio": audio_b64,
         "profile": conv.profile.model_dump(),
         "handoff": response.handoff,
+        "lead_alert_triggered": response.lead_alert_triggered,
     }
 
 
@@ -198,6 +208,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 if response.handoff:
                     handoff_card = await conv.get_handoff_card()
                     await manager.send_handoff(session_id, handoff_card.model_dump())
+
+                if response.lead_alert_triggered:
+                    await send_lead_alert(conv.profile)
 
                 # TTS
                 await manager.send_status(session_id, "speaking")

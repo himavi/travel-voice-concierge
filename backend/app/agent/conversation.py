@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -14,11 +16,13 @@ from app.models.schemas import (
     AgentResponse,
     HandoffCard,
 )
-from app.tools.lead_scorer import calculate_lead_score, get_next_priority_field
+from app.tools.lead_scorer import calculate_lead_score, get_next_priority_field, LEAD_ALERT_THRESHOLD
 from app.tools.visa_knowledge import get_visa_info
 from app.agent.prompts import SYSTEM_PROMPT, PROFILE_EXTRACTION_PROMPT, HANDOFF_SUMMARY_PROMPT
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # llama-3.3-70b-versatile is deprecated by Groq (shutoff 2026-08-16) — use their
 # recommended replacement instead.
@@ -47,18 +51,34 @@ class ConversationManager:
         new_events: List[DecisionEvent] = []
         profile_updates = {}
 
-        # Step 1: Extract profile fields from this message
-        extracted = await self._extract_profile(user_message)
+        # Step 1: Add user message to history first, so both Groq calls below
+        # see it as part of the conversation.
+        self.history.append(ConversationMessage(role="user", content=user_message))
+
+        # Step 2: Extraction and the conversational reply are independent Groq
+        # calls — run them concurrently instead of back-to-back to roughly
+        # halve per-turn latency. Trade-off: the reply's "Current profile"
+        # context note reflects the profile as of the *start* of this turn
+        # (pre-extraction). That's fine because the user's raw message — the
+        # thing that actually changed — is already in the history the reply
+        # call reads, so the model still responds to it naturally.
+        extracted, ai_text = await asyncio.gather(
+            self._extract_profile(user_message),
+            self._get_ai_response(),
+        )
+
         if extracted:
             updates, extraction_events = self._apply_profile_updates(extracted)
             profile_updates.update(updates)
             new_events.extend(extraction_events)
 
-        # Step 2: Add user message to history
-        self.history.append(ConversationMessage(role="user", content=user_message))
-
-        # Step 3: Detect handoff intent
-        if self.profile.handoff_requested:
+        # Step 3: Detect handoff intent — only the turn it first flips to
+        # True. Using self.profile.handoff_requested directly here would
+        # re-fire this event (and, via AgentResponse.handoff below, re-run
+        # the handoff-card LLM call and re-open the handoff modal on the
+        # frontend) on every subsequent message, not just the first request.
+        handoff_just_requested = "handoff_requested" in profile_updates
+        if handoff_just_requested:
             new_events.append(self._add_event(
                 "HANDOFF_REQUESTED",
                 "Customer requested to speak with a human agent",
@@ -74,6 +94,19 @@ class ConversationManager:
                 score=self.profile.lead_score,
             ))
 
+        # Fires only on the turn the score crosses the threshold. Comparing
+        # old vs new (not just `self.profile.lead_score >= THRESHOLD`) avoids
+        # re-firing every subsequent turn — the same class of bug the
+        # HANDOFF_REQUESTED gating above was fixed for. `<=` on the new side
+        # means a one-message jump (e.g. 50 -> 90) still fires correctly.
+        lead_just_qualified = old_score < LEAD_ALERT_THRESHOLD <= self.profile.lead_score
+        if lead_just_qualified:
+            new_events.append(self._add_event(
+                "LEAD_QUALIFIED",
+                f"Lead qualified as hot — score reached {self.profile.lead_score}",
+                score=self.profile.lead_score,
+            ))
+
         # Step 5: Figure out what to ask next
         next_field = get_next_priority_field(self.profile)
         new_events.append(self._add_event(
@@ -82,20 +115,15 @@ class ConversationManager:
             field=next_field,
         ))
 
-        # Step 6: Get AI response
-        ai_text = await self._get_ai_response()
-
-        # Step 7: Add assistant message to history
+        # Step 6: Add assistant message to history
         self.history.append(ConversationMessage(role="assistant", content=ai_text))
-
-        # Step 8: Build handoff card if needed
-        handoff = self.profile.handoff_requested
 
         return AgentResponse(
             text=ai_text,
             profile_updates=profile_updates,
             events=new_events,
-            handoff=handoff,
+            handoff=handoff_just_requested,
+            lead_alert_triggered=lead_just_qualified,
             next_question_hint=next_field,
         )
 
@@ -117,7 +145,8 @@ class ConversationManager:
             raw = re.sub(r"\s*```$", "", raw)
 
             return json.loads(raw)
-        except (json.JSONDecodeError, Exception):
+        except Exception:
+            logger.exception("Profile extraction failed for session %s", self.session_id)
             return {}
 
     def _apply_profile_updates(self, extracted: dict) -> tuple[dict, list]:
@@ -196,6 +225,7 @@ class ConversationManager:
             )
             return response.choices[0].message.content.strip()
         except Exception:
+            logger.exception("AI response generation failed for session %s", self.session_id)
             return "Sorry, I didn't quite catch that — could you say it again?"
 
     def _build_profile_context(self) -> str:
@@ -241,6 +271,7 @@ class ConversationManager:
             )
             summary = response.choices[0].message.content.strip()
         except Exception:
+            logger.exception("Handoff summary generation failed for session %s", self.session_id)
             summary = f"Customer inquiring about travel to {self.profile.destination or 'unknown destination'}."
 
         return HandoffCard(

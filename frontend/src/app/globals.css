@@ -2,34 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ══════════════════════════════════════
+   DESIGN TOKENS — dark-only, warm-tinted ink canvas.
+   Single accent family (coral → amber) does the emotional work; a cool
+   slate scale provides structural contrast so the orange isn't the only
+   thing doing visual work. 8px spacing grid throughout (Tailwind's default
+   4px scale used in even multiples).
+══════════════════════════════════════ */
 :root {
-  --cream:      #FDF8F1;  /* page background base */
-  --cream-2:    #FBEEDD;  /* deeper warm tint for gradients */
-  --paper:      #FFFFFF;  /* card surface */
-  --border:     #F0E1CC;
+  --canvas:     #15110D;  /* page background base — warm ink, not cold black */
+  --canvas-2:   #1C1712;  /* deeper panel tint */
+  --surface:    rgba(255,255,255,0.045);  /* glass card fill */
+  --surface-hi: rgba(255,255,255,0.075);  /* glass card fill, elevated */
+  --border:     rgba(255,255,255,0.09);
+  --border-hi:  rgba(255,255,255,0.16);
 
-  --ink:        #3A2E22;  /* primary text */
-  --ink-2:      #5C4A38;  /* secondary text */
-  --ink-dim:    #7A6248;  /* labels, uppercase, dim text */
-  --ink-faint:  #96805C;  /* placeholders, empty states */
+  --ink:        #F5F1EA;  /* primary text — warm off-white, not pure white */
+  --ink-2:      #C9C2B4;  /* secondary text */
+  --ink-dim:    #8F8878;  /* labels, uppercase, dim text */
+  --ink-faint:  #5E594E;  /* placeholders, empty states */
 
   --coral:      #FF6B4A;  /* primary accent */
   --coral-dark: #E8523A;  /* accent hover / deep warm red */
   --amber:      #F5A623;  /* secondary accent */
   --amber-soft: #FFD08A;  /* light accent tint */
 
-  --listen-red: #E5484D;  /* mic actively recording */
-  --thinking:   #7A5F3A;  /* agent processing */
-  --success:    #3FA796;  /* positive / confirmed state */
+  --slate:      #8B93A8;  /* cool secondary accent — structural contrast to coral */
+  --slate-dim:  #5B6274;
+
+  --listen-red: #F0525A;  /* mic actively recording */
+  --thinking:   #8B93A8;  /* agent processing — cool, calm */
+  --success:    #3FCFA0;  /* positive / confirmed state */
+
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px; --space-8: 64px;
 }
 
 * { box-sizing: border-box; }
 
+html { color-scheme: dark; }
+
 body {
-  background: var(--cream);
+  background: var(--canvas);
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+  font-family: var(--font-body), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: var(--font-display), var(--font-body), sans-serif;
 }
 
 /*
@@ -49,7 +70,7 @@ html.custom-cursor-active *  { cursor: none !important; }
   outline: none;
 }
 :focus-visible {
-  outline: 2px solid var(--coral-dark) !important;
+  outline: 2px solid var(--coral) !important;
   outline-offset: 2px !important;
   border-radius: 6px;
 }
@@ -78,30 +99,57 @@ html.custom-cursor-active *  { cursor: none !important; }
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(232,82,58,0.22); border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: rgba(255,107,74,0.28); border-radius: 2px; }
 
 /* ══════════════════════════════════════
-   APP BACKGROUND — soft warm daylight, not a flat fill
+   APP BACKGROUND — dimensional dark canvas: layered radial glows that
+   drift very slowly (60s+ loops, imperceptible frame-to-frame) plus a
+   faint grain overlay for tactility. All on transform/opacity so the
+   compositor handles it, never triggering layout.
 ══════════════════════════════════════ */
 .app-bg {
+  background: var(--canvas);
+  position: relative;
+  isolation: isolate;
+}
+.app-bg::before {
+  content: "";
+  position: absolute;
+  inset: -10%;
+  z-index: -2;
   background:
-    /* Soft sunrise wash, upper right */
-    radial-gradient(ellipse 55% 40% at 85% 0%,   rgba(255,208,138,0.35) 0%, transparent 60%),
-    /* Coral warmth, lower left */
-    radial-gradient(ellipse 50% 40% at 8% 90%,   rgba(255,107,74,0.14)  0%, transparent 60%),
-    /* Amber haze, center */
-    radial-gradient(ellipse 70% 45% at 50% 30%,  rgba(245,166,35,0.08)  0%, transparent 65%),
-    /* Base cream */
-    linear-gradient(180deg, #FFFBF4 0%, #FDF8F1 40%, #FBEEDD 100%);
+    radial-gradient(ellipse 45% 35% at 20% 15%, rgba(255,107,74,0.10) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 85% 20%,  rgba(245,166,35,0.07) 0%, transparent 65%),
+    radial-gradient(ellipse 55% 45% at 50% 90%,  rgba(255,107,74,0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 35% at 90% 85%,  rgba(139,147,168,0.05) 0%, transparent 60%);
+  animation: mesh-drift 70s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+/* Grain — a tiled SVG feTurbulence noise, mixed at very low opacity so it
+   reads as texture rather than visible static. */
+.app-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+@keyframes mesh-drift {
+  0%   { transform: translate3d(0,0,0) scale(1); }
+  50%  { transform: translate3d(-2%, 1.5%, 0) scale(1.04); }
+  100% { transform: translate3d(1.5%, -2%, 0) scale(1.02); }
 }
 
 /* Ambient warm glow along the bottom edge, echoes a horizon line */
 .ambient-glow {
   position: absolute;
   bottom: 0; left: 0; right: 0;
-  height: 240px;
+  height: 280px;
   background: linear-gradient(to top,
-    rgba(255,107,74,0.08) 0%,
+    rgba(255,107,74,0.10) 0%,
     rgba(245,166,35,0.04) 45%,
     transparent 100%);
   pointer-events: none;
@@ -109,73 +157,98 @@ html.custom-cursor-active *  { cursor: none !important; }
 }
 
 /* ══════════════════════════════════════
-   DESTINATION PILLS
+   DESTINATION PILLS — tactile: lift + glow on hover, not just a color swap.
 ══════════════════════════════════════ */
 .dest-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 14px;
+  padding: 7px 15px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.7);
+  background: var(--surface);
+  backdrop-filter: blur(12px);
   font-size: 12px;
-  color: var(--ink-dim);
-  backdrop-filter: blur(8px);
-  transition: all 0.2s ease;
+  color: var(--ink-2);
+  transition: transform 0.2s cubic-bezier(0.16,1,0.3,1), background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   cursor: default;
 }
 .dest-pill:hover {
-  background: #FFF3E6;
-  border-color: rgba(255,107,74,0.4);
+  transform: translateY(-2px);
+  background: var(--surface-hi);
+  border-color: rgba(255,107,74,0.35);
   color: var(--ink);
+  box-shadow: 0 8px 20px rgba(0,0,0,0.25), 0 0 0 1px rgba(255,107,74,0.08);
 }
 
 /* ══════════════════════════════════════
-   CARD SURFACES
+   GLASS SURFACES — proper glassmorphism: translucent fill, soft 1px
+   low-opacity border, subtle inner highlight, no hard drop shadow.
 ══════════════════════════════════════ */
 .glass {
-  background: rgba(255,255,255,0.72);
+  background: var(--surface);
   border: 1px solid var(--border);
-  backdrop-filter: blur(14px);
-  box-shadow: 0 4px 16px rgba(232,82,58,0.06);
+  backdrop-filter: blur(20px) saturate(140%);
+  box-shadow:
+    0 1px 0 0 rgba(255,255,255,0.06) inset,
+    0 8px 30px rgba(0,0,0,0.25);
 }
 .glass-bright {
-  background: rgba(255,255,255,0.9);
-  border: 1px solid rgba(255,107,74,0.18);
-  backdrop-filter: blur(14px);
-  box-shadow: 0 4px 20px rgba(232,82,58,0.08);
+  background: var(--surface-hi);
+  border: 1px solid var(--border-hi);
+  backdrop-filter: blur(20px) saturate(140%);
+  box-shadow:
+    0 1px 0 0 rgba(255,255,255,0.08) inset,
+    0 8px 30px rgba(0,0,0,0.3);
+}
+/* Flat card surface for content that lives inside a scrolling container.
+   backdrop-filter recomputes on every scroll frame; stacking it on cards
+   that scroll (rather than just the stationary panel behind them) was
+   costing real frame time. Same read against the panel's tint, no blur. */
+.card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 0 0 rgba(255,255,255,0.05) inset;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.card:hover {
+  background: rgba(255,255,255,0.07);
+  border-color: var(--border-hi);
+}
+
+/* Dashed placeholder underline for empty profile fields — reads as
+   "intentionally unknown yet", not "broken/missing data". */
+.empty-dash {
+  display: inline-block;
+  width: 28px;
+  border-bottom: 1.5px dashed var(--ink-faint);
+  height: 1px;
+}
+
+/* Skeleton shimmer for async-loading content */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.09) 37%, rgba(255,255,255,0.04) 63%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
 }
 
 /* ══════════════════════════════════════
    ANIMATIONS
 ══════════════════════════════════════ */
 
-/* Wave bar (orb waveform) */
-@keyframes wave-bar {
-  0%, 100% { transform: scaleY(0.12); }
-  50%       { transform: scaleY(1); }
-}
-.wave-bar {
-  transform-origin: center;
-  animation: wave-bar 0.65s ease-in-out infinite;
-}
-
-/* Orb ring burst */
-@keyframes orb-ring {
-  0%   { transform: scale(1);   opacity: 0.7; }
-  100% { transform: scale(2.1); opacity: 0; }
-}
-.orb-ring   { animation: orb-ring 1.6s ease-out infinite; }
-.orb-ring-2 { animation: orb-ring 1.6s ease-out infinite 0.5s; }
-.orb-ring-3 { animation: orb-ring 1.6s ease-out infinite 1s; }
-
 /* Slide up */
 @keyframes slide-up {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.slide-up { animation: slide-up 0.3s ease-out forwards; }
+/* `both` (not just `forwards`) so a delayed card stays hidden through its
+   animation-delay instead of flashing at full opacity then snapping back. */
+.slide-up { animation: slide-up 0.3s ease-out both; }
 
 /* Fade in */
 @keyframes fade-in {
@@ -184,12 +257,12 @@ html.custom-cursor-active *  { cursor: none !important; }
 }
 .fade-in { animation: fade-in 0.4s ease-out forwards; }
 
-/* Pulse dot */
+/* Pulse dot — used by the "Live" badge and filled-field indicators */
 @keyframes pulse-dot {
   0%, 100% { opacity: 1;   transform: scale(1); }
-  50%       { opacity: 0.3; transform: scale(0.7); }
+  50%       { opacity: 0.35; transform: scale(0.72); }
 }
-.pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+.pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
 
 /* Orbit ring (decorative around orb) */
 @keyframes orbit-spin {
@@ -207,12 +280,27 @@ html.custom-cursor-active *  { cursor: none !important; }
 .bob { animation: bob 4s ease-in-out infinite; }
 
 /* Glow shadows */
-.glow-coral { box-shadow: 0 8px 32px rgba(255,107,74,0.35), 0 2px 8px rgba(232,82,58,0.15); }
+.glow-coral { box-shadow: 0 8px 32px rgba(255,107,74,0.35), 0 2px 8px rgba(232,82,58,0.2); }
 .glow-amber { box-shadow: 0 8px 28px rgba(245,166,35,0.3); }
-.glow-soft  { box-shadow: 0 4px 20px rgba(58,46,34,0.08); }
+.glow-soft  { box-shadow: 0 4px 24px rgba(0,0,0,0.35); }
 
-/* Thinking spinner */
-@keyframes spin-slow {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+/* ══════════════════════════════════════
+   LANDING ⇄ APP TRANSITION
+   Both use transform/opacity/filter only — no width/height/layout
+   properties — so the browser can animate them on the compositor
+   thread instead of re-laying-out and repainting every frame.
+══════════════════════════════════════ */
+@keyframes landing-out {
+  from { opacity: 1; transform: scale(1);    filter: blur(0px); }
+  to   { opacity: 0; transform: scale(0.96); filter: blur(4px); }
 }
+.landing-leave {
+  animation: landing-out 0.38s cubic-bezier(0.4,0,0.2,1) forwards;
+  pointer-events: none;
+}
+
+@keyframes app-in {
+  from { opacity: 0; transform: scale(0.98) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.app-enter { animation: app-in 0.5s cubic-bezier(0.16,1,0.3,1) forwards; }

@@ -30,7 +30,7 @@ class ConversationMessage(BaseModel):
 
 
 class DecisionEvent(BaseModel):
-    event_type: str  # INTENT_DETECTED, FIELD_EXTRACTED, FIELD_MISSING, QUESTION_GENERATED, LEAD_SCORE_UPDATED, HANDOFF_REQUESTED
+    event_type: str  # INTENT_DETECTED, FIELD_EXTRACTED, FIELD_MISSING, QUESTION_GENERATED, LEAD_SCORE_UPDATED, HANDOFF_REQUESTED, LEAD_QUALIFIED
     description: str
     field: Optional[str] = None
     value: Optional[str] = None
@@ -43,6 +43,7 @@ class AgentResponse(BaseModel):
     profile_updates: dict = {}
     events: List[DecisionEvent] = []
     handoff: bool = False
+    lead_alert_triggered: bool = False
     next_question_hint: Optional[str] = None
 
 

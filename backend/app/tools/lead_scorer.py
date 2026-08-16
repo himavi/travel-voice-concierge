@@ -15,6 +15,8 @@ SCORING_WEIGHTS = {
     "handoff_requested": 10,  # high intent signal
 }
 
+LEAD_ALERT_THRESHOLD = 70  # score at which a hot-lead push notification fires
+
 
 def calculate_lead_score(profile: CustomerProfile) -> int:
     score = 0
