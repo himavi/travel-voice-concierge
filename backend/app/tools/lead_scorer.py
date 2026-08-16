@@ -11,7 +11,7 @@ SCORING_WEIGHTS = {
     "visa_required": 10,
     "first_schengen": 5,
     "budget": 5,
-    "customer_name": 4,
+    "customer_name": 10,  # bumped from 4 — now a required opening question, not an opportunistic extra
     "handoff_requested": 10,  # high intent signal
 }
 
@@ -49,6 +49,8 @@ def calculate_lead_score(profile: CustomerProfile) -> int:
 
 def get_missing_fields(profile: CustomerProfile) -> list[str]:
     missing = []
+    if not profile.customer_name:
+        missing.append("name")
     if not profile.destination:
         missing.append("destination")
     if not profile.passport:
@@ -66,6 +68,8 @@ def get_missing_fields(profile: CustomerProfile) -> list[str]:
 
 def get_next_priority_field(profile: CustomerProfile) -> str:
     """Returns the single most important missing field to ask about next."""
+    if not profile.customer_name:
+        return "their name"
     if not profile.destination:
         return "destination"
     if not profile.passport:

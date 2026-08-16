@@ -192,7 +192,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     conv = sessions[session_id]
 
     # Send initial greeting
-    greeting = "Hi there! I'm Aria, your travel concierge. Where are you planning to go?"
+    greeting = "Hi there! I'm Aria, your travel concierge. What's your name?"
     from app.models.schemas import ConversationMessage
     conv.history.append(ConversationMessage(role="assistant", content=greeting))
     await manager.send_status(session_id, "idle")
