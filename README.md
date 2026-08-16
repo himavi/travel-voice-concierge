@@ -170,6 +170,36 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
+## Deploying for free
+
+Backend on Render, frontend on Vercel. Both have generous free tiers and auto-deploy on every push to `master`.
+
+### 1. Backend → Render
+
+1. In the Render dashboard: **New → Blueprint**, point it at this GitHub repo. It reads `render.yaml` at the repo root and pre-fills everything (root dir `backend`, build/start commands, `/health` check, free plan).
+2. When prompted, set env vars:
+   - `GROQ_API_KEY` — required
+   - `ALLOWED_ORIGINS` — leave blank for now, you'll set it after the frontend is deployed
+   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — optional
+3. Deploy and note the URL Render gives you, e.g. `https://travel-voice-concierge-backend.onrender.com`.
+
+**About cold starts:** Render's free web services sleep after 15 minutes of no traffic; the next request then takes 30-60s to wake it, which is bad for a voice demo. Fix it with a free uptime pinger — [cron-job.org](https://cron-job.org) or UptimeRobot — hitting `https://<your-backend>.onrender.com/health` every 10 minutes. That keeps one service alive 24/7 and still fits inside Render's 750 free instance-hours/month.
+
+### 2. Frontend → Vercel
+
+1. Vercel dashboard → **New Project** → import the same repo.
+2. Set **Root Directory** to `frontend`.
+3. Add env vars:
+   - `NEXT_PUBLIC_BACKEND_URL=https://<your-backend>.onrender.com`
+   - `NEXT_PUBLIC_WS_URL=wss://<your-backend>.onrender.com`
+4. Deploy — you get a free `*.vercel.app` URL on the Hobby plan.
+
+### 3. Close the CORS loop
+
+Back in Render → your service → Environment, set `ALLOWED_ORIGINS=https://<your-frontend>.vercel.app` and save (triggers a redeploy). Without this the backend rejects requests from the deployed frontend — `main.py` only allows `localhost` by default plus whatever's in `ALLOWED_ORIGINS`.
+
+---
+
 ## How the agent works
 
 Each turn runs through `ConversationManager.process_message`:
