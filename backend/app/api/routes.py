@@ -9,6 +9,7 @@ FastAPI routes:
 
 import base64
 import json
+import logging
 import uuid
 from typing import Dict
 
@@ -19,6 +20,8 @@ from app.agent.conversation import ConversationManager
 from app.agent.voice import transcribe_audio, synthesize_speech
 from app.api.websocket_manager import manager
 from app.tools.notifier import send_lead_alert
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -149,7 +152,8 @@ async def send_audio(
     try:
         audio_bytes_out = await synthesize_speech(response.text)
         audio_b64 = base64.b64encode(audio_bytes_out).decode("utf-8")
-    except Exception as e:
+    except Exception:
+        logger.exception("TTS synthesis failed for session %s", session_id)
         audio_b64 = None
 
     await manager.send_status(session_id, "idle")
@@ -219,7 +223,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
                     await manager.send_audio(session_id, audio_b64)
                 except Exception:
-                    pass
+                    logger.exception("TTS synthesis failed for session %s", session_id)
 
                 await manager.send_status(session_id, "idle")
 
