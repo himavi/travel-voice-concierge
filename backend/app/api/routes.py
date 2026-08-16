@@ -20,6 +20,7 @@ from app.agent.conversation import ConversationManager
 from app.agent.voice import transcribe_audio, synthesize_speech
 from app.api.websocket_manager import manager
 from app.tools.notifier import send_lead_alert
+from app.tools.visa_knowledge import get_visa_info
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,16 @@ async def get_profile(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     profile = sessions[session_id].profile
     return profile.model_dump()
+
+
+@router.get("/api/sessions/{session_id}/visa-info")
+async def get_visa_info_route(session_id: str):
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    profile = sessions[session_id].profile
+    if not profile.destination or not profile.passport:
+        return {"available": False}
+    return {"available": True, **get_visa_info(profile.passport, profile.destination)}
 
 
 @router.get("/api/sessions/{session_id}/events")

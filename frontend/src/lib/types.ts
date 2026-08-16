@@ -47,6 +47,17 @@ export interface HandoffCard {
 
 export type AgentStatus = "idle" | "listening" | "thinking" | "speaking";
 
+export interface VisaInfo {
+  available: boolean;
+  visa_required?: boolean | null;
+  visa_type?: string;
+  processing_time?: string;
+  fee?: string;
+  validity?: string;
+  notes?: string;
+  documents?: string[];
+}
+
 export interface WSMessage {
   type: string;
   data: Record<string, unknown>;

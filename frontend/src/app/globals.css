@@ -101,6 +101,11 @@ html.custom-cursor-active *  { cursor: none !important; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,107,74,0.28); border-radius: 2px; }
 
+/* Hide scrollbar entirely — used by the compact inline conversation view,
+   where a visible scrollbar on a 168px strip reads as clutter. */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
 /* ══════════════════════════════════════
    APP BACKGROUND — dimensional dark canvas: layered radial glows that
    drift very slowly (60s+ loops, imperceptible frame-to-frame) plus a

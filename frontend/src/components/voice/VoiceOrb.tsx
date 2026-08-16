@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { AgentStatus } from "@/lib/types";
 import clsx from "clsx";
 
@@ -21,15 +20,6 @@ function getLabel(status: AgentStatus, liveMode: boolean): string {
     default:          return liveMode
       ? "Live — just start talking whenever you're ready. Tap to mute."
       : "Muted. Tap, or press Enter or Space, to resume listening";
-  }
-}
-
-function getStatusText(status: AgentStatus, liveMode: boolean): string {
-  switch (status) {
-    case "listening": return "Listening — tap when done";
-    case "thinking":  return "Thinking";
-    case "speaking":  return "Speaking · tap to interrupt";
-    default:          return liveMode ? "Live — just start talking" : "Muted — tap to resume";
   }
 }
 
@@ -190,30 +180,7 @@ export function VoiceOrb({ status, liveMode, onTap, getInputLevel }: Props) {
   const isMuted     = isIdle && !liveMode;
 
   return (
-    <div className="flex flex-col items-center gap-6 select-none">
-      {/* Status label — crossfades between states instead of hard-swapping */}
-      <div className="h-9 relative w-[260px]" role="status" aria-live="polite">
-        <AnimatePresence mode="wait">
-          <motion.p
-            key={getStatusText(status, liveMode)}
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className="text-[11px] font-semibold tracking-[0.14em] uppercase absolute inset-x-0 text-center leading-relaxed"
-            style={{
-              color: isListening ? "#F0525A"
-                   : isThinking  ? "#8B93A8"
-                   : isSpeaking  ? "#F5A623"
-                   : isAmbient   ? "#FF8A65"
-                   : "#5E594E",
-            }}
-          >
-            {getStatusText(status, liveMode)}
-          </motion.p>
-        </AnimatePresence>
-      </div>
-
+    <div className="flex flex-col items-center select-none">
       {/* Orb wrapper */}
       <div className="relative flex items-center justify-center w-[220px] h-[220px]">
         {isAmbient && (
