@@ -24,11 +24,19 @@ async def with_retries(
     base_delay_s: float = 0.4,
     timeout_s: float = 8.0,
     label: str = "call",
+    no_retry_on: tuple[type[Exception], ...] = (),
 ) -> T:
+    """`no_retry_on` is for errors a retry can't possibly fix — e.g. Groq's
+    RateLimitError, which reports a wait time measured in minutes, so
+    retrying half a second later just adds latency before the same
+    graceful-fallback outcome. Fails fast on those instead."""
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
             return await asyncio.wait_for(coro_fn(), timeout=timeout_s)
+        except no_retry_on as exc:
+            logger.warning("%s hit a non-retryable error: %s", label, exc)
+            raise
         except Exception as exc:
             last_exc = exc
             logger.warning(

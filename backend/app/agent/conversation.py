@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from typing import List, Optional
 
-from groq import AsyncGroq
+from groq import AsyncGroq, RateLimitError
 from dotenv import load_dotenv
 
 from app.models.schemas import (
@@ -351,8 +351,11 @@ class ConversationManager:
         for extra in extra_system_messages:
             messages.append({"role": "system", "content": extra})
 
-        # Last 10 turns to keep context window lean.
-        for msg in self.history[-10:]:
+        # Last 6 turns to keep context window lean — the fixed system-prompt
+        # overhead already dominates per-turn token cost on Groq's free
+        # tier (~1200 tokens before any history at all), so history is kept
+        # tighter than the original 10 to stretch the shared daily quota.
+        for msg in self.history[-6:]:
             messages.append({"role": msg.role, "content": msg.content})
 
         async def _call():
@@ -360,13 +363,13 @@ class ConversationManager:
                 model=CHAT_MODEL,
                 messages=messages,
                 temperature=0.3,
-                max_tokens=450,
+                max_tokens=300,
                 reasoning_effort="low",
                 response_format=TURN_RESULT_JSON_SCHEMA,
             )
 
         try:
-            response = await with_retries(_call, label="llm_turn")
+            response = await with_retries(_call, label="llm_turn", no_retry_on=(RateLimitError,))
             raw = response.choices[0].message.content
             return TurnResult.model_validate_json(raw)
         except Exception:
@@ -465,7 +468,7 @@ class ConversationManager:
             )
 
         try:
-            response = await with_retries(_call, label="handoff_summary")
+            response = await with_retries(_call, label="handoff_summary", no_retry_on=(RateLimitError,))
             summary = response.choices[0].message.content.strip()
         except Exception:
             logger.exception("Handoff summary generation failed for session %s", self.session_id)
