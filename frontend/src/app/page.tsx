@@ -12,7 +12,7 @@ import { LeadScore } from "@/components/dashboard/LeadScore";
 import { DecisionTrace } from "@/components/dashboard/DecisionTrace";
 import { VisaInsight } from "@/components/dashboard/VisaInsight";
 import { HandoffCard } from "@/components/dashboard/HandoffCard";
-import { ChevronUp, Mic, Map, Zap, Handshake, AlertTriangle, Globe2 } from "lucide-react";
+import { ChevronUp, Mic, Map, Zap, Handshake, AlertTriangle, Globe2, MessageSquare } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
 
@@ -56,9 +56,9 @@ export default function Home() {
   const [isStarting, setIsStarting]               = useState(false);
   const [mobileInsightsOpen, setMobileInsightsOpen] = useState(false);
 
-  const handleStart = async () => {
+  const handleStart = async (withVoice: boolean = true) => {
     setIsStarting(true);
-    const sid = await start();
+    const sid = await start(withVoice);
     setIsStarting(false);
     if (!sid) return;
     // Let the landing screen play its exit animation before the app mounts,
@@ -179,36 +179,59 @@ export default function Home() {
             ))}
           </motion.div>
 
-          {/* CTA button */}
-          <motion.button
+          {/* CTA buttons */}
+          <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.4 }}
-            whileHover={{ scale: 1.03 }}
-            whileTap={{ scale: 0.97 }}
-            onClick={handleStart}
-            disabled={isStarting}
-            aria-busy={isStarting}
-            className="group relative px-8 py-4 rounded-2xl font-semibold text-white text-sm overflow-hidden disabled:opacity-60 disabled:cursor-not-allowed"
-            style={{
-              background: "linear-gradient(135deg, #FF6B4A, #FF8A5C, #F5A623)",
-              boxShadow: "0 8px 32px rgba(255,107,74,0.35), 0 2px 8px rgba(232,82,58,0.3)",
-            }}
+            className="flex flex-col sm:flex-row items-center gap-3"
           >
-            <span className="relative z-10 flex items-center gap-2">
-              <Mic className="w-4 h-4" aria-hidden="true" />
-              {isStarting ? "Launching..." : "Start Talking"}
-            </span>
-            {/* Shimmer */}
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
-          </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={() => handleStart(true)}
+              disabled={isStarting}
+              aria-busy={isStarting}
+              className="group relative px-8 py-4 rounded-2xl font-semibold text-white text-sm overflow-hidden disabled:opacity-60 disabled:cursor-not-allowed"
+              style={{
+                background: "linear-gradient(135deg, #FF6B4A, #FF8A5C, #F5A623)",
+                boxShadow: "0 8px 32px rgba(255,107,74,0.35), 0 2px 8px rgba(232,82,58,0.3)",
+              }}
+            >
+              <span className="relative z-10 flex items-center gap-2">
+                <Mic className="w-4 h-4" aria-hidden="true" />
+                {isStarting ? "Launching..." : "Start Talking"}
+              </span>
+              {/* Shimmer */}
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
+            </motion.button>
+
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={() => handleStart(false)}
+              disabled={isStarting}
+              aria-busy={isStarting}
+              className="px-8 py-4 rounded-2xl font-semibold text-sm disabled:opacity-60 disabled:cursor-not-allowed border"
+              style={{
+                background: "var(--surface)",
+                borderColor: "var(--border)",
+                color: "var(--ink)",
+              }}
+            >
+              <span className="flex items-center gap-2">
+                <MessageSquare className="w-4 h-4" aria-hidden="true" />
+                Just Chat
+              </span>
+            </motion.button>
+          </motion.div>
 
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5, delay: 0.5 }}
             className="text-xs mt-4" style={{ color: "var(--ink-faint)" }}>
-            Just start talking — it's a live conversation · Or type a message
+            Start talking for a live conversation, or just chat by typing — no mic needed
           </motion.p>
 
           {/* Feature row */}

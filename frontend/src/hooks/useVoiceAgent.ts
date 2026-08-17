@@ -476,31 +476,56 @@ export function useVoiceAgent() {
       return;
     }
     // Otherwise: idle — toggle the continuous loop on/off (mute/unmute).
-    const next = !liveModeRef.current;
-    liveModeRef.current = next;
-    setLiveMode(next);
-    if (next) resumeAtRef.current = Date.now() + 150;
-  }, [stopCurrentUtterance, stopCurrentAudio]);
+    if (!liveModeRef.current) {
+      // Voice was never started (e.g. a chat-only session) or the mic
+      // stream was never acquired — get it now, on demand, instead of
+      // silently flipping a flag that nothing is listening to.
+      if (!micStreamRef.current) {
+        getMicStream()
+          .then(() => {
+            liveModeRef.current = true;
+            setLiveMode(true);
+            resumeAtRef.current = Date.now() + 150;
+            startLiveLoop();
+          })
+          .catch(() => {
+            setError("Microphone access is needed to talk — check your browser permissions.");
+          });
+        return;
+      }
+      liveModeRef.current = true;
+      setLiveMode(true);
+      resumeAtRef.current = Date.now() + 150;
+      return;
+    }
+    liveModeRef.current = false;
+    setLiveMode(false);
+  }, [stopCurrentUtterance, stopCurrentAudio, getMicStream, startLiveLoop]);
 
   // ── Start session ─────────────────────────────────────────────────────────
 
-  const start = useCallback(async () => {
+  // withVoice=false skips mic acquisition entirely (no permission prompt,
+  // no background listening) — for a "just chat" entry point. The mic can
+  // still be turned on later on demand via toggleLiveMode tapping the orb.
+  const start = useCallback(async (withVoice: boolean = true) => {
     setError(null);
     setStatus("idle");
     const sid = await initSession();
     if (!sid) return null;
     connectWS(sid);
-    try {
-      await getMicStream();
-      liveModeRef.current = true;
-      setLiveMode(true);
-      resumeAtRef.current = Date.now() + 300;
-      startLiveLoop();
-    } catch {
-      // Mic permission denied or unavailable — session still starts (text
-      // input keeps working); the orb will show its muted state.
-      liveModeRef.current = false;
-      setLiveMode(false);
+    if (withVoice) {
+      try {
+        await getMicStream();
+        liveModeRef.current = true;
+        setLiveMode(true);
+        resumeAtRef.current = Date.now() + 300;
+        startLiveLoop();
+      } catch {
+        // Mic permission denied or unavailable — session still starts (text
+        // input keeps working); the orb will show its muted state.
+        liveModeRef.current = false;
+        setLiveMode(false);
+      }
     }
     return sid;
   }, [initSession, connectWS, getMicStream, startLiveLoop]);
