@@ -363,7 +363,7 @@ class ConversationManager:
                 model=CHAT_MODEL,
                 messages=messages,
                 temperature=0.3,
-                max_tokens=300,
+                max_tokens=450,
                 reasoning_effort="low",
                 response_format=TURN_RESULT_JSON_SCHEMA,
             )
