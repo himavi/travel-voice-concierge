@@ -1,117 +1,59 @@
 """
-Mock visa knowledge base.
-In production this would call the actual Atlys API.
+Visa/budget lookups. Backed by the structured knowledge base in
+app/tools/knowledge_base.py (app/data/visa_knowledge.json) rather than the
+tiny hardcoded dicts this module used to define directly.
+
+Results are cached in Redis for 24h (`@cached`) — visa rules and geocoded
+destination resolutions don't change intra-day, and this also keeps repeat
+queries from re-hitting Nominatim's free geocoding service unnecessarily.
 """
 
-VISA_DATA = {
-    ("india", "france"): {
-        "visa_required": True,
-        "visa_type": "Schengen Visa (Type C)",
-        "processing_time": "15-30 working days",
-        "fee": "€80 (~₹7,200)",
-        "validity": "Up to 90 days within 180 days",
-        "notes": "Biometric appointment required at VFS Global. Book early for peak season (Jun-Aug, Dec).",
-        "documents": [
-            "Valid passport (6 months validity)",
-            "Recent passport-sized photos",
-            "Flight itinerary",
-            "Hotel bookings",
-            "Travel insurance (min €30,000 coverage)",
-            "Bank statements (last 3 months)",
-            "Proof of employment / leave letter",
-            "ITR / salary slips",
-        ],
-    },
-    ("india", "schengen"): {
-        "visa_required": True,
-        "visa_type": "Schengen Visa (Type C)",
-        "processing_time": "15-30 working days",
-        "fee": "€80 (~₹7,200)",
-        "notes": "Schengen covers 27 European countries. Apply at the embassy of the country you spend most time in.",
-    },
-    ("india", "uk"): {
-        "visa_required": True,
-        "visa_type": "UK Standard Visitor Visa",
-        "processing_time": "3-6 weeks",
-        "fee": "£115 (~₹12,000)",
-        "notes": "UK is NOT part of Schengen. Separate visa required.",
-    },
-    ("india", "uae"): {
-        "visa_required": False,
-        "notes": "Indians get visa on arrival for 30 days in UAE.",
-    },
-    ("india", "usa"): {
-        "visa_required": True,
-        "visa_type": "B1/B2 Tourist Visa",
-        "processing_time": "Varies widely (interview wait can be 300+ days)",
-        "fee": "$185 (~₹15,500)",
-        "notes": "Interview required at US consulate. Apply well in advance.",
-    },
-}
-
-BUDGET_ESTIMATES = {
-    "france": {
-        "budget_per_person_per_day_inr": 8000,
-        "flight_from_india_inr": 55000,
-        "visa_fee_inr": 7200,
-        "currency": "EUR",
-    },
-    "uk": {
-        "budget_per_person_per_day_inr": 10000,
-        "flight_from_india_inr": 50000,
-        "visa_fee_inr": 12000,
-        "currency": "GBP",
-    },
-    "usa": {
-        "budget_per_person_per_day_inr": 12000,
-        "flight_from_india_inr": 65000,
-        "visa_fee_inr": 15500,
-        "currency": "USD",
-    },
-    "uae": {
-        "budget_per_person_per_day_inr": 6000,
-        "flight_from_india_inr": 20000,
-        "visa_fee_inr": 0,
-        "currency": "AED",
-    },
-}
+from app.core.redis_client import cached
+from app.tools.knowledge_base import lookup as kb_lookup
 
 
-def get_visa_info(passport: str, destination: str) -> dict:
-    passport = passport.lower()
-    destination = destination.lower()
+@cached(ttl=86400, prefix="visa")
+async def get_visa_info(passport: str, destination: str) -> dict:
+    passport = passport.strip().lower()
+    destination = destination.strip().lower()
 
-    # Try exact match first
-    key = (passport, destination)
-    if key in VISA_DATA:
-        return VISA_DATA[key]
-
-    # Try Schengen fallback for European countries
-    schengen_countries = [
-        "france", "germany", "italy", "spain", "netherlands",
-        "portugal", "austria", "switzerland", "greece", "belgium",
-        "sweden", "norway", "denmark", "finland", "czech republic",
-        "poland", "hungary", "croatia", "slovenia", "slovakia",
-    ]
-    if passport == "india" and destination in schengen_countries:
-        return VISA_DATA.get(("india", "schengen"), {})
+    record = await kb_lookup(passport, destination)
+    if record is None:
+        return {
+            "visa_required": None,
+            "notes": (
+                f"Visa information for {passport} passport to {destination} "
+                "not available. Please check the official embassy website."
+            ),
+        }
 
     return {
-        "visa_required": None,
-        "notes": f"Visa information for {passport} passport to {destination} not available. Please check the official embassy website.",
+        "visa_required": record["visa_required"],
+        "visa_type": record.get("visa_type"),
+        "processing_time": record.get("processing_time"),
+        "fee": record.get("fee"),
+        "validity": record.get("validity"),
+        "notes": record.get("notes"),
+        "documents": record.get("documents", []),
+        "source": record.get("source"),
+        "last_verified": record.get("last_verified"),
     }
 
 
-def estimate_budget(destination: str, travelers: int, days: int) -> dict:
-    destination = destination.lower()
-    data = BUDGET_ESTIMATES.get(destination)
-    if not data:
+@cached(ttl=86400, prefix="budget")
+async def estimate_budget(destination: str, travelers: int, days: int) -> dict:
+    destination = destination.strip().lower()
+
+    # Budget data is currently only modeled for Indian-passport corridors,
+    # matching the app's existing India-centric scope.
+    record = await kb_lookup("india", destination)
+    if record is None:
         return {"error": f"Budget estimate not available for {destination}"}
 
-    per_person = data["budget_per_person_per_day_inr"] * days
+    per_person = record["budget_per_person_per_day_inr"] * days
     total_stay = per_person * travelers
-    flights = data["flight_from_india_inr"] * travelers
-    visas = data["visa_fee_inr"] * travelers
+    flights = record["flight_from_india_inr"] * travelers
+    visas = record["visa_fee_inr"] * travelers
     total = total_stay + flights + visas
 
     return {
@@ -123,6 +65,6 @@ def estimate_budget(destination: str, travelers: int, days: int) -> dict:
         "visa_fees_inr": visas,
         "total_estimated_inr": total,
         "total_estimated_formatted": f"₹{total:,}",
-        "currency": data["currency"],
+        "currency": record["currency"],
         "note": "Estimates are approximate. Actual costs may vary.",
     }

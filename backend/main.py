@@ -1,24 +1,30 @@
-import logging
 import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
+from app.core.logging_config import configure_logging
+from app.core.rate_limit import limiter
 from app.api.routes import router
+from app.api.admin import router as admin_router
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+configure_logging()
 
 app = FastAPI(
     title="Travel Voice Concierge API",
     description="Backend for the Atlys voice-powered travel concierge",
     version="1.0.0",
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Local dev origins always allowed; production origins (e.g. the deployed
 # Vercel URL) come from an env var so adding/changing them is a dashboard
@@ -42,6 +48,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(admin_router)
 
 
 @app.get("/health")

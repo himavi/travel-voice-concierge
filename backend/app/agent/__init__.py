@@ -1,2 +1,2 @@
 from .conversation import ConversationManager
-from .voice import transcribe_audio, synthesize_speech, synthesize_speech_streaming
+from .voice import transcribe_audio, synthesize_speech, synthesize_speech_sentences, synthesize_speech_streaming

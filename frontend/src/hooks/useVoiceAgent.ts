@@ -65,6 +65,10 @@ export function useVoiceAgent() {
   const audioChunksRef = useRef<Blob[]>([]);
   const isRecordingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Backend now sends one reply as several sentence-by-sentence audio_chunk
+  // messages (streaming TTS) instead of one big clip — queue them and play
+  // back-to-back rather than letting each new chunk cut off the last one.
+  const audioQueueRef = useRef<string[]>([]);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -92,16 +96,29 @@ export function useVoiceAgent() {
   // ── Audio playback ────────────────────────────────────────────────────────
 
   const stopCurrentAudio = useCallback(() => {
+    // Barge-in / starting a fresh turn both mean "throw away whatever's
+    // queued", not just the clip currently playing.
+    audioQueueRef.current = [];
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
       currentAudioRef.current = null;
     }
   }, []);
 
-  const playAudio = useCallback((base64: string) => {
-    stopCurrentAudio();
+  const playNextInQueue = useCallback(() => {
+    const next = audioQueueRef.current.shift();
+    if (!next) {
+      currentAudioRef.current = null;
+      // Brief cooldown before the continuous loop starts listening for
+      // onset again, so any speaker bleed/echo tail isn't mistaken for
+      // the start of the next turn. Only fires once the whole queue (i.e.
+      // the whole reply) has finished playing.
+      resumeAtRef.current = Date.now() + RESUME_COOLDOWN_MS;
+      setStatus("idle");
+      return;
+    }
     try {
-      const binary = atob(base64);
+      const binary = atob(next);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const blob = new Blob([bytes], { type: "audio/mpeg" });
@@ -111,17 +128,19 @@ export function useVoiceAgent() {
       audio.play().catch(() => {});
       audio.onended = () => {
         URL.revokeObjectURL(url);
-        currentAudioRef.current = null;
-        // Brief cooldown before the continuous loop starts listening for
-        // onset again, so any speaker bleed/echo tail isn't mistaken for
-        // the start of the next turn.
-        resumeAtRef.current = Date.now() + RESUME_COOLDOWN_MS;
-        setStatus("idle");
+        playNextInQueue();
       };
     } catch {
-      setStatus("idle");
+      playNextInQueue();
     }
-  }, [stopCurrentAudio]);
+  }, []);
+
+  const playAudio = useCallback((base64: string) => {
+    audioQueueRef.current.push(base64);
+    // If nothing's playing right now, this chunk starts immediately —
+    // otherwise it waits its turn behind whatever's already queued.
+    if (!currentAudioRef.current) playNextInQueue();
+  }, [playNextInQueue]);
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
 

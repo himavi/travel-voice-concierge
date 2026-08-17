@@ -1,8 +1,7 @@
-import asyncio
 import json
 import logging
 import os
-import re
+import time
 from datetime import datetime
 from typing import List, Optional
 
@@ -17,25 +16,88 @@ from app.models.schemas import (
     HandoffCard,
 )
 from app.tools.lead_scorer import calculate_lead_score, get_next_priority_field, get_missing_fields, LEAD_ALERT_THRESHOLD
-from app.tools.visa_knowledge import get_visa_info
-from app.agent.prompts import SYSTEM_PROMPT, PROFILE_EXTRACTION_PROMPT, HANDOFF_SUMMARY_PROMPT, FALLBACK_QUESTIONS, FALLBACK_KEYWORDS
+from app.tools.geo import resolve_destination, display_country
+from app.tools.knowledge_base import lookup as kb_lookup
+from app.agent.llm_schema import TurnResult, ProfileUpdates, TURN_RESULT_JSON_SCHEMA
+from app.agent.prompts import (
+    SYSTEM_PROMPT,
+    EXTRACTION_FIELDS_NOTE,
+    VISA_GROUNDING_FOUND,
+    VISA_GROUNDING_MISSING,
+    CLARIFICATION_INSTRUCTION,
+    HANDOFF_SUMMARY_PROMPT,
+    FALLBACK_QUESTIONS,
+    FALLBACK_KEYWORDS,
+)
+from app.core.retry import with_retries
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 # llama-3.3-70b-versatile is deprecated by Groq (shutoff 2026-08-16) — use their
-# recommended replacement instead.
+# recommended replacement instead. Also the model Groq's strict-mode JSON
+# schema structured outputs are confirmed supported on (see llm_schema.py).
 CHAT_MODEL = "openai/gpt-oss-120b"
+
+_VISA_KEYWORDS = [
+    "visa", "document", "processing time", "fee", "requirement",
+    "apply", "application", "embassy", "consulate",
+]
+
+# Extracted fields the turn call can produce, mapped 1:1 to CustomerProfile
+# attribute names. "intent" is handled separately (top-level on TurnResult,
+# not part of ProfileUpdates).
+_FIELD_MAP = {
+    "destination": "destination",
+    "passport": "passport",
+    "travelers": "travelers",
+    "travel_month": "travel_month",
+    "travel_dates": "travel_dates",
+    "purpose": "purpose",
+    "visa_required": "visa_required",
+    "first_schengen": "first_schengen",
+    "budget": "budget",
+    "customer_name": "customer_name",
+    "handoff_requested": "handoff_requested",
+}
+
+# Below this, a destination/passport extraction is treated as "unconfirmed"
+# bookkeeping rather than silently authoritative — the turn prompt (see
+# EXTRACTION_FIELDS_NOTE) is already instructed to ask a one-line
+# confirmation in its reply when confidence is low; this just makes that
+# gated by a real number instead of hoping the model remembers on its own.
+CONFIDENCE_CONFIRM_THRESHOLD = 0.6
+_CONFIDENCE_GATED_FIELDS = {"destination", "passport"}
 
 
 class ConversationManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
-        self.client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        self.client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"), timeout=15.0)
         self.profile = CustomerProfile(session_id=session_id)
         self.history: List[ConversationMessage] = []
         self.events: List[DecisionEvent] = []
+        self.unconfirmed_fields: set[str] = set()
+
+    # ─── Redis (de)serialization — see app/core/session_store.py ───────────
+
+    def to_state(self) -> dict:
+        return {
+            "profile": json.loads(self.profile.model_dump_json()),
+            "history": [json.loads(m.model_dump_json()) for m in self.history],
+            "events": [json.loads(e.model_dump_json()) for e in self.events],
+            "unconfirmed_fields": sorted(self.unconfirmed_fields),
+        }
+
+    @classmethod
+    def from_state(cls, session_id: str, state: dict) -> "ConversationManager":
+        conv = cls(session_id)
+        conv.profile = CustomerProfile(**state["profile"])
+        conv.history = [ConversationMessage(**m) for m in state.get("history", [])]
+        conv.events = [DecisionEvent(**e) for e in state.get("events", [])]
+        conv.unconfirmed_fields = set(state.get("unconfirmed_fields", []))
+        return conv
 
     def _add_event(self, event_type: str, description: str, **kwargs) -> DecisionEvent:
         event = DecisionEvent(
@@ -46,40 +108,121 @@ class ConversationManager:
         self.events.append(event)
         return event
 
+    def _is_visa_related(self, user_message: str) -> bool:
+        text = user_message.lower()
+        if any(k in text for k in _VISA_KEYWORDS):
+            return True
+        return get_next_priority_field(self.profile) == "whether they need a visa"
+
     async def process_message(self, user_message: str) -> AgentResponse:
         """Main entry point — process a user message and return agent response."""
         new_events: List[DecisionEvent] = []
         profile_updates = {}
 
-        # Step 1: Add user message to history first, so both Groq calls below
-        # see it as part of the conversation.
         self.history.append(ConversationMessage(role="user", content=user_message))
 
-        # Step 2: Extraction and the conversational reply are independent Groq
-        # calls — run them concurrently instead of back-to-back to roughly
-        # halve per-turn latency. Trade-off: the reply's "Current profile"
-        # context note reflects the profile as of the *start* of this turn
-        # (pre-extraction). That's fine because the user's raw message — the
-        # thing that actually changed — is already in the history the reply
-        # call reads, so the model still responds to it naturally.
-        #
-        # next_field/missing_fields are computed from pre-extraction state
-        # for the same reason, and handed to the reply call explicitly —
-        # otherwise the model has to re-infer what's still missing purely by
-        # rereading the transcript every turn, with nothing forcing it to
-        # keep going instead of drifting into open-ended chat once the
-        # conversation "feels" complete.
+        # Deterministic resolution of a pending destination clarification —
+        # the turn call is instructed (CLARIFICATION_INSTRUCTION) to extract
+        # the customer's answer into profile_updates itself, but that's not
+        # guaranteed: it may acknowledge "the Nepal side" conversationally
+        # ("Got it, Nepal it is") without actually setting
+        # profile_updates.destination, leaving the profile stuck pointing at
+        # the original ambiguous raw text. Checking whether the raw message
+        # names one of the candidates directly closes that gap regardless of
+        # what the extraction call did — same "don't fully trust one LLM
+        # call" philosophy as the fallback-question safety net below.
+        if self.profile.pending_clarification and self.profile.pending_clarification.get("field") == "destination":
+            candidates = self.profile.pending_clarification.get("candidates", [])
+            text_lower = user_message.lower()
+            matched = next((c for c in candidates if c.lower() in text_lower), None)
+            if matched:
+                self.profile.destination = matched
+                self.profile.pending_clarification = None
+                self.profile.updated_at = datetime.utcnow()
+                profile_updates["destination"] = matched
+                profile_updates["pending_clarification"] = None
+                new_events.append(self._add_event(
+                    "FIELD_EXTRACTED",
+                    f"Destination clarified: {display_country(matched)}",
+                    field="destination",
+                    value=matched,
+                ))
+
         pre_next_field = get_next_priority_field(self.profile)
         pre_missing_fields = get_missing_fields(self.profile)
-        extracted, ai_text = await asyncio.gather(
-            self._extract_profile(user_message),
-            self._get_ai_response(pre_next_field, pre_missing_fields),
-        )
 
+        # Extra grounding/instruction system messages injected ahead of the
+        # turn call — kept out of SYSTEM_PROMPT itself since they're
+        # situational, not always-on.
+        extra_system_messages: list[str] = []
+
+        # A pending destination clarification takes priority over anything
+        # else the model would otherwise ask about next.
+        if self.profile.pending_clarification:
+            pc = self.profile.pending_clarification
+            candidates = ", ".join(display_country(c) for c in pc.get("candidates", []))
+            extra_system_messages.append(
+                CLARIFICATION_INSTRUCTION.format(raw=pc.get("raw", ""), candidates=candidates)
+            )
+
+        # Visa-question grounding (item 7) — look up the knowledge base
+        # *before* the turn call and hand the model verified data (or an
+        # explicit "no verified data" instruction) instead of letting it
+        # improvise fees/processing-times/documents from its own knowledge.
+        if self.profile.destination and self.profile.passport and self._is_visa_related(user_message):
+            record = await kb_lookup(self.profile.passport, self.profile.destination)
+            if record:
+                extra_system_messages.append(VISA_GROUNDING_FOUND.format(
+                    record=json.dumps(record, ensure_ascii=False),
+                    last_verified=record.get("last_verified", "recently"),
+                ))
+            else:
+                extra_system_messages.append(VISA_GROUNDING_MISSING)
+
+        turn_start = time.perf_counter()
+        result = await self._run_turn(user_message, pre_next_field, pre_missing_fields, extra_system_messages)
+        latency_ms = (time.perf_counter() - turn_start) * 1000
+        ai_text = result.reply
+
+        extracted = result.profile_updates.model_dump(exclude_none=True)
         if extracted:
-            updates, extraction_events = self._apply_profile_updates(extracted)
+            updates, extraction_events = self._apply_profile_updates(extracted, result.confidence)
             profile_updates.update(updates)
             new_events.extend(extraction_events)
+
+        # Intent lives at the top level of TurnResult now (structured output,
+        # item 5), not inside profile_updates.
+        if result.intent and result.intent != self.profile.intent:
+            self.profile.intent = result.intent
+            profile_updates["intent"] = result.intent
+            new_events.append(self._add_event(
+                "INTENT_DETECTED",
+                f"Intent detected: {result.intent}",
+                field="intent",
+                value=result.intent,
+            ))
+
+        # Destination ambiguity check (item 2) — only when destination
+        # actually changed this turn, using the same resolver "the Alps"
+        # already goes through (app/tools/geo.py).
+        if "destination" in profile_updates:
+            resolution = await resolve_destination(profile_updates["destination"])
+            if resolution.ambiguous:
+                self.profile.pending_clarification = {
+                    "field": "destination",
+                    "raw": profile_updates["destination"],
+                    "candidates": resolution.candidates,
+                }
+                profile_updates["pending_clarification"] = self.profile.pending_clarification
+                new_events.append(self._add_event(
+                    "DESTINATION_CLARIFICATION_NEEDED",
+                    f"Destination \"{profile_updates['destination']}\" could mean: {', '.join(resolution.candidates)}",
+                    field="destination",
+                    value=profile_updates["destination"],
+                ))
+            elif self.profile.pending_clarification and self.profile.pending_clarification.get("field") == "destination":
+                self.profile.pending_clarification = None
+                profile_updates["pending_clarification"] = None
 
         # Step 3: Detect handoff intent — only the turn it first flips to
         # True. Using self.profile.handoff_requested directly here would
@@ -118,6 +261,8 @@ class ConversationManager:
 
         # Step 5: Figure out what to ask next
         next_field = get_next_priority_field(self.profile)
+        missing_fields_after = get_missing_fields(self.profile)
+        profile_just_completed = bool(pre_missing_fields) and not missing_fields_after
         new_events.append(self._add_event(
             "QUESTION_GENERATED",
             f"Next priority field: {next_field}",
@@ -132,13 +277,15 @@ class ConversationManager:
         # only catches the first case; checking for topic keywords catches
         # both. Rather than trust a second LLM call to fix what the first one
         # got wrong, append a fixed question so the conversation always keeps
-        # moving toward a complete profile.
-        fallback_q = FALLBACK_QUESTIONS.get(next_field)
-        if fallback_q:
-            keywords = FALLBACK_KEYWORDS.get(next_field, [])
-            on_topic = any(k in ai_text.lower() for k in keywords)
-            if not on_topic:
-                ai_text = f"{ai_text.rstrip()} {fallback_q}"
+        # moving toward a complete profile. Skipped while a clarification is
+        # pending — that question already takes priority.
+        if not self.profile.pending_clarification:
+            fallback_q = FALLBACK_QUESTIONS.get(next_field)
+            if fallback_q:
+                keywords = FALLBACK_KEYWORDS.get(next_field, [])
+                on_topic = any(k in ai_text.lower() for k in keywords)
+                if not on_topic:
+                    ai_text = f"{ai_text.rstrip()} {fallback_q}"
 
         # Step 6: Add assistant message to history
         self.history.append(ConversationMessage(role="assistant", content=ai_text))
@@ -150,96 +297,33 @@ class ConversationManager:
             handoff=handoff_just_requested,
             lead_alert_triggered=lead_just_qualified,
             next_question_hint=next_field,
+            profile_just_completed=profile_just_completed,
+            intent=result.intent,
+            confidence=result.confidence,
+            next_action=result.next_action,
+            latency_ms=latency_ms,
         )
 
-    async def _extract_profile(self, message: str) -> dict:
-        """Use LLM to extract structured profile data from raw message."""
-        prompt = PROFILE_EXTRACTION_PROMPT.format(message=message)
-        try:
-            response = await self.client.chat.completions.create(
-                model=CHAT_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=300,
-                reasoning_effort="low",
-            )
-            raw = response.choices[0].message.content.strip()
+    async def _run_turn(
+        self,
+        user_message: str,
+        next_field: str,
+        missing_fields: list[str],
+        extra_system_messages: list[str],
+    ) -> TurnResult:
+        """One Groq call, strict-mode JSON-schema structured output (item 5):
+        returns the conversational reply plus extracted profile fields,
+        intent, confidence, and next_action together — replacing the old
+        two-call (free-text extraction + separate reply) approach."""
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": EXTRACTION_FIELDS_NOTE},
+        ]
 
-            # Strip markdown code fences if present
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-
-            return json.loads(raw)
-        except Exception:
-            logger.exception("Profile extraction failed for session %s", self.session_id)
-            return {}
-
-    def _apply_profile_updates(self, extracted: dict) -> tuple[dict, list]:
-        """Apply extracted fields to profile, return what changed and events."""
-        updates = {}
-        events = []
-
-        field_map = {
-            "destination": "destination",
-            "passport": "passport",
-            "travelers": "travelers",
-            "travel_month": "travel_month",
-            "travel_dates": "travel_dates",
-            "purpose": "purpose",
-            "visa_required": "visa_required",
-            "first_schengen": "first_schengen",
-            "budget": "budget",
-            "customer_name": "customer_name",
-            "handoff_requested": "handoff_requested",
-            "intent": "intent",
-        }
-
-        for key, profile_field in field_map.items():
-            if key in extracted and extracted[key] is not None:
-                old_val = getattr(self.profile, profile_field, None)
-                new_val = extracted[key]
-
-                if old_val != new_val:
-                    setattr(self.profile, profile_field, new_val)
-                    updates[profile_field] = new_val
-                    self.profile.updated_at = datetime.utcnow()
-
-                    if key == "intent":
-                        events.append(self._add_event(
-                            "INTENT_DETECTED",
-                            f"Intent detected: {new_val}",
-                            field="intent",
-                            value=str(new_val),
-                        ))
-                    elif key == "handoff_requested" and new_val:
-                        pass  # handled separately
-                    else:
-                        events.append(self._add_event(
-                            "FIELD_EXTRACTED",
-                            f"{profile_field.replace('_', ' ').title()} identified: {new_val}",
-                            field=profile_field,
-                            value=str(new_val),
-                        ))
-
-        return updates, events
-
-    async def _get_ai_response(self, next_field: str, missing_fields: list[str]) -> str:
-        """Get conversational response from LLM."""
-        # Build messages for the LLM
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-        # Add profile context as a system note
         profile_context = self._build_profile_context()
         if profile_context:
-            messages.append({
-                "role": "system",
-                "content": f"Current profile: {profile_context}"
-            })
+            messages.append({"role": "system", "content": f"Current profile: {profile_context}"})
 
-        # Explicitly tell the model what's still missing and what to ask
-        # next — without this it has to re-infer the gap from the raw
-        # transcript every turn, which is exactly what let conversations
-        # trail off before the profile was actually complete.
         if missing_fields:
             messages.append({
                 "role": "system",
@@ -264,22 +348,79 @@ class ConversationManager:
                 ),
             })
 
-        # Add conversation history (last 10 turns to keep context window lean)
+        for extra in extra_system_messages:
+            messages.append({"role": "system", "content": extra})
+
+        # Last 10 turns to keep context window lean.
         for msg in self.history[-10:]:
             messages.append({"role": msg.role, "content": msg.content})
 
-        try:
-            response = await self.client.chat.completions.create(
+        async def _call():
+            return await self.client.chat.completions.create(
                 model=CHAT_MODEL,
                 messages=messages,
-                temperature=0.7,
-                max_tokens=200,
+                temperature=0.3,
+                max_tokens=450,
                 reasoning_effort="low",
+                response_format=TURN_RESULT_JSON_SCHEMA,
             )
-            return response.choices[0].message.content.strip()
+
+        try:
+            response = await with_retries(_call, label="llm_turn")
+            raw = response.choices[0].message.content
+            return TurnResult.model_validate_json(raw)
         except Exception:
-            logger.exception("AI response generation failed for session %s", self.session_id)
-            return "Sorry, I didn't quite catch that — could you say it again?"
+            logger.exception("Turn generation failed for session %s", self.session_id)
+            return TurnResult(
+                reply="Sorry, I didn't quite catch that — could you say it again?",
+                intent=None,
+                confidence=0.0,
+                next_action="none",
+                profile_updates=ProfileUpdates(),
+            )
+
+    def _apply_profile_updates(self, extracted: dict, confidence: float) -> tuple[dict, list]:
+        """Apply extracted fields to profile, return what changed and events."""
+        updates = {}
+        events = []
+
+        for key, profile_field in _FIELD_MAP.items():
+            if key in extracted and extracted[key] is not None:
+                old_val = getattr(self.profile, profile_field, None)
+                new_val = extracted[key]
+
+                if old_val != new_val:
+                    setattr(self.profile, profile_field, new_val)
+                    updates[profile_field] = new_val
+                    self.profile.updated_at = datetime.utcnow()
+
+                    # Confidence-gated confirmation (item 6) — the field is
+                    # still committed (lead scoring / "what's missing" stay
+                    # simple truthiness checks), but flagged as unconfirmed
+                    # so a later turn can clear it once the value repeats or
+                    # the customer affirms it. The reply itself is already
+                    # instructed (EXTRACTION_FIELDS_NOTE) to ask a one-line
+                    # confirmation when confidence is low.
+                    if profile_field in _CONFIDENCE_GATED_FIELDS and confidence < CONFIDENCE_CONFIRM_THRESHOLD:
+                        self.unconfirmed_fields.add(profile_field)
+                    else:
+                        self.unconfirmed_fields.discard(profile_field)
+
+                    if key == "handoff_requested" and new_val:
+                        pass  # handled separately by the caller
+                    else:
+                        events.append(self._add_event(
+                            "FIELD_EXTRACTED",
+                            f"{profile_field.replace('_', ' ').title()} identified: {new_val}",
+                            field=profile_field,
+                            value=str(new_val),
+                        ))
+                elif profile_field in _CONFIDENCE_GATED_FIELDS and profile_field in self.unconfirmed_fields:
+                    # Same value repeated on a later turn — treat that as
+                    # the customer implicitly confirming it.
+                    self.unconfirmed_fields.discard(profile_field)
+
+        return updates, events
 
     def _build_profile_context(self) -> str:
         """Summarize known profile for the LLM context injection."""
@@ -314,14 +455,17 @@ class ConversationManager:
             profile=profile_text,
         )
 
-        try:
-            response = await self.client.chat.completions.create(
+        async def _call():
+            return await self.client.chat.completions.create(
                 model=CHAT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=150,
                 reasoning_effort="low",
             )
+
+        try:
+            response = await with_retries(_call, label="handoff_summary")
             summary = response.choices[0].message.content.strip()
         except Exception:
             logger.exception("Handoff summary generation failed for session %s", self.session_id)

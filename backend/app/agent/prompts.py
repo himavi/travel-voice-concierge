@@ -48,28 +48,44 @@ User: "I want to talk to someone"
 You: "Of course! Let me connect you with one of our travel specialists right away. They'll have everything we've discussed ready so you don't have to repeat yourself."
 """
 
-PROFILE_EXTRACTION_PROMPT = """Extract travel profile information from the user's message.
+# Folded into the merged structured turn call (see agent/llm_schema.py +
+# conversation.py's _run_turn) as an additional system message — the model
+# now returns reply text AND these extracted fields in one schema-enforced
+# response instead of two separate calls.
+EXTRACTION_FIELDS_NOTE = """When you reply, also fill in profile_updates with anything the customer's LATEST message clearly states — leave a field null if it wasn't mentioned this turn. Do not guess or infer beyond what was actually said.
 
-Return a JSON object with ONLY the fields that are clearly mentioned. Do not guess or infer.
+- destination: country name, normalized (e.g. "France"). If the customer names a region/landmark instead of a country, put it as they said it — don't guess a single country yourself.
+- passport: country of passport/nationality (e.g. "India")
+- travelers: integer, number of people traveling
+- travel_month: month name (e.g. "November")
+- travel_dates: specific dates if mentioned
+- purpose: one of "tourism", "business", "education", "medical", "family visit", "other" — map synonyms too ("leisure"/"vacation"/"holiday"/"honeymoon"/"sightseeing" → "tourism"; "work"/"conference" → "business")
+- visa_required: boolean, only if the customer explicitly asks or confirms
+- first_schengen: boolean, only if the customer mentions it's their first Schengen trip
+- budget: budget range if mentioned
+- customer_name: if the customer mentions their name
+- handoff_requested: true if the customer asks to speak to a human/agent/person
 
-Fields to extract:
-- destination: string (country name, normalized, e.g. "France")
-- passport: string (country of passport/nationality, e.g. "India")
-- travelers: integer (number of people traveling)
-- travel_month: string (month name, e.g. "November")
-- travel_dates: string (specific dates if mentioned)
-- purpose: string (one of: "tourism", "business", "education", "medical", "family visit", "other" — map synonyms too: "leisure"/"vacation"/"holiday"/"honeymoon"/"sightseeing" all mean "tourism"; "work"/"conference" means "business")
-- visa_required: boolean (only if user explicitly asks or confirms)
-- first_schengen: boolean (only if user mentions it's their first Schengen trip)
-- budget: string (budget range if mentioned)
-- customer_name: string (if user mentions their name)
-- handoff_requested: boolean (true if user asks to speak to a human/agent/person)
-- intent: string (one of: "visa_inquiry", "trip_planning", "cost_inquiry", "general_info", "human_handoff")
+Also set confidence (0-1): how sure you are that this turn's profile_updates are correct. Use a low value (below 0.5) when you had to infer rather than the customer stating it plainly — this triggers a confirmation question instead of silently committing to a guess.
 
-User message: "{message}"
+Set intent to whichever best describes what the customer is after right now: "visa_inquiry", "trip_planning", "cost_inquiry", "general_info", "human_handoff", or "chitchat".
 
-Return ONLY valid JSON. If nothing relevant is found, return {{}}.
-"""
+Set next_action to the single most useful thing to do next: "ask_field" (default — keep gathering profile info), "provide_visa_info" (they're asking about visa requirements and destination+passport are known), "estimate_budget" (they're asking about cost and destination is known), "request_handoff" (they asked for a human), "clarify_destination" (the destination they gave is ambiguous — spans multiple countries), or "none"."""
+
+# Injected as a system message ahead of the turn call when a visa question
+# is detected and a knowledge-base record was found for the corridor — this
+# is what keeps visa answers grounded instead of improvised (item 7).
+VISA_GROUNDING_FOUND = """The customer is asking about visa requirements. Here is VERIFIED data for this exact passport/destination — answer using ONLY this data. If asked, you may cite the source and last-verified date naturally (e.g. "as of {last_verified}").  Do not add or invent any detail not present here.
+
+{record}"""
+
+# Injected instead when no knowledge-base record matches the corridor —
+# keeps the model from improvising specifics it doesn't actually have.
+VISA_GROUNDING_MISSING = """The customer is asking about visa requirements for a passport/destination combination that isn't in the verified knowledge base. Say plainly that you don't have verified details for that specific corridor, and offer to connect them with a specialist rather than guessing at fees, processing times, or document requirements."""
+
+# Injected when the destination they just gave resolves to more than one
+# plausible country and needs a clarifying follow-up before anything else.
+CLARIFICATION_INSTRUCTION = """The destination the customer mentioned ("{raw}") could mean more than one country: {candidates}. Before anything else, ask a short, natural follow-up to find out which one they mean. Do not guess or pick one for them."""
 
 # Deterministic fallback question per next_field value (see
 # lead_scorer.get_next_priority_field). The reply LLM is instructed to ask
