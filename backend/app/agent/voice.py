@@ -8,7 +8,7 @@ import re
 import tempfile
 import aiofiles
 import edge_tts
-from groq import AsyncGroq, RateLimitError
+from groq import AsyncGroq
 from dotenv import load_dotenv
 
 from app.core.retry import with_retries
@@ -140,7 +140,7 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
                 prompt=_STT_VOCAB_PROMPT,
             )
 
-        transcription = await with_retries(_call, label="stt", no_retry_on=(RateLimitError,))
+        transcription = await with_retries(_call, label="stt")
 
         result = transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
         logger.info("STT result", extra={"stage": "stt", "result_len": len(result)})

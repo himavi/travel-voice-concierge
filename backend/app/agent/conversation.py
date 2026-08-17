@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from typing import List, Optional
 
-from groq import AsyncGroq, RateLimitError
+from groq import AsyncGroq
 from dotenv import load_dotenv
 
 from app.models.schemas import (
@@ -373,7 +373,7 @@ class ConversationManager:
             )
 
         try:
-            response = await with_retries(_call, label="llm_turn", no_retry_on=(RateLimitError,))
+            response = await with_retries(_call, label="llm_turn")
             raw = response.choices[0].message.content
             return TurnResult.model_validate_json(raw)
         except Exception:
@@ -472,7 +472,7 @@ class ConversationManager:
             )
 
         try:
-            response = await with_retries(_call, label="handoff_summary", no_retry_on=(RateLimitError,))
+            response = await with_retries(_call, label="handoff_summary")
             summary = response.choices[0].message.content.strip()
         except Exception:
             logger.exception("Handoff summary generation failed for session %s", self.session_id)
