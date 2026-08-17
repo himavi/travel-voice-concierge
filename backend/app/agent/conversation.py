@@ -35,10 +35,14 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# llama-3.3-70b-versatile is deprecated by Groq (shutoff 2026-08-16) — use their
-# recommended replacement instead. Also the model Groq's strict-mode JSON
-# schema structured outputs are confirmed supported on (see llm_schema.py).
-CHAT_MODEL = "openai/gpt-oss-120b"
+# Using the 20b variant rather than 120b: both support Groq's strict-mode
+# JSON-schema structured outputs (see llm_schema.py), but each model has its
+# own independent tokens-per-day quota on the free tier — 120b's 200k/day
+# bucket got drained during testing, while 20b's is a separate, untouched
+# allowance. Effectively doubles the free daily budget by spreading load
+# across two buckets instead of hammering one. llama-3.3-70b-versatile
+# (the original model here) is deprecated by Groq (shutoff 2026-08-16).
+CHAT_MODEL = "openai/gpt-oss-20b"
 
 _VISA_KEYWORDS = [
     "visa", "document", "processing time", "fee", "requirement",
