@@ -330,6 +330,25 @@ export default function Home() {
               {/* Compact live conversation view */}
               {!showTranscript && <Conversation messages={transcript} />}
 
+              {/* Explicit, clearly-labeled way back into voice mode for
+                  sessions that started (or were muted into) chat-only —
+                  tapping the orb does the same thing, but that's not an
+                  obvious affordance on its own. */}
+              {!isVoiceActive && !showTranscript && !liveMode && status !== "thinking" && (
+                <motion.button
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  onClick={toggleLiveMode}
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-1.5 rounded-full transition-colors"
+                  style={{ color: "var(--ink-dim)", background: "var(--surface)", border: "1px solid var(--border)" }}
+                >
+                  <Mic className="w-3 h-3" aria-hidden="true" />
+                  Switch to voice
+                </motion.button>
+              )}
+
               {/* Text input — hidden while the transcript drawer is open since
                   the drawer has its own input right below the messages;
                   showing both at once let this one visually collide with the

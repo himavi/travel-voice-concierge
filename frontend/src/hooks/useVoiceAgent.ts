@@ -489,7 +489,10 @@ export function useVoiceAgent() {
             startLiveLoop();
           })
           .catch(() => {
-            setError("Microphone access is needed to talk — check your browser permissions.");
+            // Most likely cause: the browser already remembers a prior
+            // "block" decision for this site and won't re-prompt on its
+            // own — getUserMedia() just rejects immediately in that case.
+            setError("Couldn't access your microphone. If you previously blocked it, allow microphone access for this site in your browser's address-bar/site settings, then tap the orb again.");
           });
         return;
       }
