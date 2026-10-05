@@ -1,18 +1,13 @@
 """
-Per-IP rate limiting via slowapi, backed by the same Redis instance used
-for sessions/caching (no second piece of infra). Falls back to slowapi's
-in-memory storage if REDIS_URL isn't set — still useful locally, just not
-shared across multiple processes.
-"""
+Per-IP rate limiting via slowapi, in process memory.
 
-import os
+It used to share the Upstash Redis instance, but slowapi has no fallback when
+Redis is unreachable: once the free Upstash database was deleted, every
+request failed with a 500. The backend runs as a single process, so in-memory
+limits are just as accurate here.
+"""
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-_redis_url = os.getenv("REDIS_URL")
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=_redis_url if _redis_url else "memory://",
-)
+limiter = Limiter(key_func=get_remote_address, storage_uri="memory://")
