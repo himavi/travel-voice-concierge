@@ -1,0 +1,10 @@
+tests/
+.pytest_cache/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.wav
+*.mp3
+Dockerfile
+.dockerignore

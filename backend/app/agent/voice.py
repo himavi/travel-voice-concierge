@@ -1,26 +1,58 @@
 """
-Voice handling: Groq Whisper for STT, Edge TTS for TTS.
+Text-to-speech for text and voice-lite modes (edge-tts, free).
+
+The whole reply is synthesized as ONE MP3 clip and returned in the REST
+response, so sentences can't arrive or play out of order. Speech-to-text is
+no longer done here: voice-lite sends the WAV straight to Gemini Flash-Lite,
+which transcribes and replies in one call (agent/conversation.py).
 """
 
 import logging
-import os
 import re
-import tempfile
-import aiofiles
+from typing import Optional
+
 import edge_tts
-from groq import AsyncGroq
-from dotenv import load_dotenv
 
 from app.core.retry import with_retries
 
-load_dotenv()
-
 logger = logging.getLogger(__name__)
 
-# Edge TTS voice — "en-US-AriaNeural" sounds warm and natural
-TTS_VOICE = "en-US-AriaNeural"
-TTS_RATE = "+0%"    # normal speed
-TTS_PITCH = "+0Hz"  # natural pitch
+DEFAULT_VOICE = "en-US-AriaNeural"
+# A multilingual voice for languages without a dedicated entry below.
+MULTILINGUAL_VOICE = "en-US-AvaMultilingualNeural"
+TTS_RATE = "+0%"
+TTS_PITCH = "+0Hz"
+
+# Aria replies in the user's language; pick a native voice when we have one.
+_VOICES_BY_LANGUAGE = {
+    "en": DEFAULT_VOICE,
+    "hi": "hi-IN-SwaraNeural",
+    "es": "es-ES-ElviraNeural",
+    "fr": "fr-FR-DeniseNeural",
+    "de": "de-DE-KatjaNeural",
+    "it": "it-IT-ElsaNeural",
+    "pt": "pt-BR-FranciscaNeural",
+    "ja": "ja-JP-NanamiNeural",
+    "zh": "zh-CN-XiaoxiaoNeural",
+    "ar": "ar-AE-FatimaNeural",
+    "ta": "ta-IN-PallaviNeural",
+    "te": "te-IN-ShrutiNeural",
+    "bn": "bn-IN-TanishaaNeural",
+    "mr": "mr-IN-AarohiNeural",
+    "gu": "gu-IN-DhwaniNeural",
+    "kn": "kn-IN-SapnaNeural",
+    "ml": "ml-IN-SobhanaNeural",
+    "ur": "ur-PK-UzmaNeural",
+}
+
+MAX_TTS_CHARS = 1500
+
+
+def voice_for_language(language: Optional[str]) -> str:
+    if not language:
+        return DEFAULT_VOICE
+    base = language.strip().lower().replace("_", "-").split("-")[0]
+    return _VOICES_BY_LANGUAGE.get(base, MULTILINGUAL_VOICE)
 
 # Edge TTS narrates emoji by their alt-text ("glowing star") instead of
 # skipping them, which reads as broken speech. Strip them for the audio
@@ -90,77 +122,14 @@ def _prepare_for_speech(text: str) -> str:
     return cleaned or text
 
 
-# Whisper's "prompt" param biases transcription toward words it's primed to
-# expect — without it, short/ambiguous destination names (e.g. "Alps") get
-# misheard as something phonetically close. Lists common trip vocabulary so
-# the model has a prior for the kind of speech it's hearing.
-_STT_VOCAB_PROMPT = (
-    "Conversation about travel visas and trip planning. Destinations: "
-    "the Alps, Switzerland, France, Schengen, UK, United States, USA, UAE, Dubai, "
-    "Italy, Spain, Germany, Netherlands, Greece, Thailand, Bali, Indonesia, "
-    "Japan, Singapore, Canada, Australia. Terms: passport, visa, tourism, "
-    "business, itinerary, embassy, VFS Global, biometric."
-)
+async def synthesize_speech(text: str, language: Optional[str] = None) -> bytes:
+    """Whole reply -> one MP3 (bytes)."""
+    voice = voice_for_language(language)
 
-
-async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> str:
-    """
-    Transcribe audio using Groq's Whisper API.
-    Returns the transcribed text.
-    """
-    client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"), timeout=15.0)
-
-    suffix = os.path.splitext(filename)[-1] or ".webm"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(audio_bytes)
-        tmp_path = tmp.name
-
-    try:
-        async with aiofiles.open(tmp_path, "rb") as f:
-            audio_data = await f.read()
-
-        logger.info("STT request", extra={"stage": "stt", "audio_bytes": len(audio_data), "audio_filename": filename})
-
-        # Determine content type
-        if suffix == ".ogg":
-            content_type = "audio/ogg"
-        elif suffix == ".mp4":
-            content_type = "audio/mp4"
-        elif suffix == ".wav":
-            content_type = "audio/wav"
-        else:
-            content_type = "audio/webm"
-
-        async def _call():
-            return await client.audio.transcriptions.create(
-                file=(filename, audio_data, content_type),
-                model="whisper-large-v3-turbo",  # faster + just as accurate
-                language="en",
-                response_format="text",
-                prompt=_STT_VOCAB_PROMPT,
-            )
-
-        transcription = await with_retries(_call, label="stt")
-
-        result = transcription.strip() if isinstance(transcription, str) else transcription.text.strip()
-        logger.info("STT result", extra={"stage": "stt", "result_len": len(result)})
-        return result
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-
-
-async def synthesize_speech(text: str) -> bytes:
-    """
-    Convert text to speech using Edge TTS.
-    Returns MP3 audio bytes.
-    """
     async def _call():
         communicate = edge_tts.Communicate(
-            text=_prepare_for_speech(text),
-            voice=TTS_VOICE,
+            text=_prepare_for_speech(text)[:MAX_TTS_CHARS],
+            voice=voice,
             rate=TTS_RATE,
             pitch=TTS_PITCH,
         )
@@ -170,61 +139,4 @@ async def synthesize_speech(text: str) -> bytes:
                 audio_chunks.append(chunk["data"])
         return b"".join(audio_chunks)
 
-    return await with_retries(_call, label="tts")
-
-
-# Splits on sentence-ending punctuation, but folds any fragment shorter than
-# a few words into the next sentence so "Nice! Great." doesn't produce a
-# clipped-sounding half-second clip.
-_SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
-
-
-def _split_sentences(text: str) -> list[str]:
-    raw_parts = [p.strip() for p in _SENTENCE_SPLIT_PATTERN.split(text) if p.strip()]
-    if not raw_parts:
-        return []
-
-    merged: list[str] = []
-    for part in raw_parts:
-        if merged and len(merged[-1].split()) < 4:
-            merged[-1] = f"{merged[-1]} {part}"
-        else:
-            merged.append(part)
-    return merged
-
-
-async def synthesize_speech_sentences(text: str):
-    """
-    Yields one complete, independently playable MP3 clip per sentence,
-    synthesized sequentially — so the first sentence reaches the caller (and
-    can start playing) without waiting on the rest of the reply. Each yielded
-    chunk is a full clip (not a raw byte fragment), unlike
-    synthesize_speech_streaming below, so it's safe to play immediately.
-
-    If a later sentence fails to synthesize, stop yielding further chunks
-    rather than raising — whatever already went out still plays fine.
-    """
-    sentences = _split_sentences(_prepare_for_speech(text)) or [text]
-    for sentence in sentences:
-        try:
-            yield await synthesize_speech(sentence)
-        except Exception:
-            logger.exception("TTS sentence synthesis failed, stopping stream early")
-            return
-
-
-async def synthesize_speech_streaming(text: str):
-    """
-    Generator that yields audio chunks as they're produced.
-    Use this for lower latency — start playing before full synthesis.
-    """
-    communicate = edge_tts.Communicate(
-        text=_prepare_for_speech(text),
-        voice=TTS_VOICE,
-        rate=TTS_RATE,
-        pitch=TTS_PITCH,
-    )
-
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            yield chunk["data"]
+    return await with_retries(_call, label="tts", timeout_s=15.0)

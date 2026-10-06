@@ -1,32 +1,53 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+/**
+ * Aria's conversation orchestrator.
+ *
+ * Three modes, best first:
+ *  - "live": Gemini Live speech-to-speech straight from the browser (useLiveSession).
+ *  - "lite": voice-lite fallback — record an utterance (energy endpointer),
+ *            POST it as a WAV to /audio, play the returned MP3 as one clip.
+ *  - "text": typed chat via /text.
+ *
+ * Every dashboard update arrives in the HTTP response that caused it (no
+ * WebSocket to our backend). Agent status is derived locally from the player
+ * and the mic endpointer, never reported by the server.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, ApiError } from "@/lib/api";
+import { EnergyEndpointer } from "@/lib/audio/endpointer";
 import {
+  AudioWorkletUnsupportedError,
+  MicCapture,
+  requestMicStream,
+  setPlayAndRecordSession,
+  startMicCapture,
+  supportsAudioWorklet,
+} from "@/lib/audio/micCapture";
+import { PcmPlayer } from "@/lib/audio/pcmPlayer";
+import { base64ToBytes, concatPcm16, encodeWav } from "@/lib/audio/wav";
+import { useLiveSession, type FinalTurn, type LiveFallbackReason } from "@/hooks/useLiveSession";
+import type {
+  AgentStatus,
+  BackendState,
   CustomerProfile,
   DecisionEvent,
-  TranscriptMessage,
   HandoffCard,
-  AgentStatus,
+  HistoryTurn,
+  TranscriptMessage,
+  Turn,
+  VisaInfo,
+  VoiceMode,
 } from "@/lib/types";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
-
-// Voice-activity tuning for the continuous, always-listening session (no tap
-// needed between turns — closer to how ChatGPT/Gemini voice mode feels).
-// We only have amplitude to go on (no live transcript to judge whether a
-// pause is mid-thought or mid-sentence), so this is a real trade-off knob:
-// too short and it clips people mid-sentence, too long and every reply
-// feels sluggish since the agent won't even start thinking until the timer
-// elapses. 1.8s lands closer to how a normal conversational beat feels —
-// tolerant of a breath or "um", without a long dead-air tax on every turn.
-// If you know you're done, tap the orb — that skips the wait entirely.
-const SPEECH_VOLUME_THRESHOLD = 8;  // byte-deviation peak counted as "speaking"
-const MIN_RECORDING_MS = 500;       // never auto-stop before this — gives the caller a beat to start
-const SILENCE_TIMEOUT_MS = 1800;    // quiet time after speech before we auto-send
-const MAX_RECORDING_MS = 30000;     // hard cap in case VAD never sees silence
-const VOLUME_SAMPLE_MS = 60;        // sampling interval — fine-grained enough to catch onset and soft trailing words
-const RESUME_COOLDOWN_MS = 500;     // pause listening-for-onset briefly after the agent finishes speaking, so speaker bleed/echo isn't picked up as the next turn
+const ENABLE_LIVE = process.env.NEXT_PUBLIC_ENABLE_LIVE !== "false";
+const HEALTH_TIMEOUT_MS = 60000;
+/** Quiet gap after Aria stops talking before the lite mic re-arms (speaker tail). */
+const LITE_COOLDOWN_MS = 350;
+/** Live: show "thinking" this long after the caller stops, unless audio starts first. */
+const LIVE_THINKING_WINDOW_MS = 4000;
+const HISTORY_LIMIT = 30;
 
 const DEFAULT_PROFILE: CustomerProfile = {
   session_id: "",
@@ -47,554 +68,568 @@ const DEFAULT_PROFILE: CustomerProfile = {
   updated_at: "",
 };
 
+const SEED_FIELDS = [
+  "destination", "passport", "travelers", "travel_month", "travel_dates", "purpose",
+  "visa_required", "first_schengen", "budget", "customer_name", "intent",
+] as const;
+
+const FALLBACK_NOTICE: Record<LiveFallbackReason, string> = {
+  busy: "Live voice is busy right now, so Aria switched to Lite voice. Same conversation, slightly slower replies.",
+  token_error: "Live voice is unavailable right now, so Aria switched to Lite voice.",
+  connect_failed: "Couldn't open a Live voice connection, so Aria switched to Lite voice.",
+  closed: "The Live voice connection dropped, so Aria switched to Lite voice. Your profile is intact.",
+};
+
+function describeError(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    if (e.status === 0) return "Couldn't reach Aria's server. Check your connection and try again.";
+    if (e.status === 429) return "Aria is handling a lot of requests. Give it a few seconds and try again.";
+    if (e.status === 413) return "That was a bit long. Try a shorter message.";
+  }
+  return fallback;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
 export function useVoiceAgent() {
+  // ── React state (render only) ───────────────────────────────────────────
+  const [backend, setBackend] = useState<BackendState>("waking");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [mode, setMode] = useState<VoiceMode>("text");
   const [status, setStatus] = useState<AgentStatus>("idle");
-  const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+  const [messages, setMessages] = useState<TranscriptMessage[]>([]);
+  const [partials, setPartials] = useState<{ user?: TranscriptMessage; assistant?: TranscriptMessage }>({});
   const [profile, setProfile] = useState<CustomerProfile>(DEFAULT_PROFILE);
   const [events, setEvents] = useState<DecisionEvent[]>([]);
   const [handoff, setHandoff] = useState<HandoffCard | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
+  const [visa, setVisa] = useState<VisaInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [liveMode, setLiveMode] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [micOn, setMicOn] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [networkDown, setNetworkDown] = useState(false);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const sessionIdRef = useRef<string | null>(null);
-  const statusRef = useRef<AgentStatus>("idle");
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const isRecordingRef = useRef(false);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
-  // Backend now sends one reply as several sentence-by-sentence audio_chunk
-  // messages (streaming TTS) instead of one big clip — queue them and play
-  // back-to-back rather than letting each new chunk cut off the last one.
-  const audioQueueRef = useRef<string[]>([]);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ── Mutable runtime (read by audio callbacks; never stale) ──────────────
+  const [r] = useState(() => ({
+    sessionId: null as string | null,
+    greeting: null as string | null,
+    recreating: null as Promise<string> | null,
+    mode: "text" as VoiceMode,
+    status: "idle" as AgentStatus,
+    micOn: false,
+    profile: DEFAULT_PROFILE,
+    messages: [] as TranscriptMessage[],
+    ctx: null as AudioContext | null,
+    player: null as PcmPlayer | null,
+    stream: null as MediaStream | null,
+    capture: null as MicCapture | null,
+    endpointer: new EnergyEndpointer(),
+    level: 0,
+    busy: false,              // our own HTTP turn (text/lite) in flight
+    inflight: null as TranscriptMessage | null, // typed message not yet acknowledged
+    toolsPending: false,      // live tool round-trip in flight
+    awaitingUntil: 0,         // live: caller stopped, waiting for Aria's audio
+    awaitingTimer: null as ReturnType<typeof setTimeout> | null,
+    cooldownUntil: 0,         // lite: echo guard after playback
+    suppressLiveAudio: false, // live: user tapped to cut Aria off; drop rest of this turn
+    noticeTimer: null as ReturnType<typeof setTimeout> | null,
+  }));
 
-  // Persistent mic stream + volume metering — acquired once per session and
-  // reused for every turn, so the continuous loop never has to re-request
-  // getUserMedia mid-conversation.
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const maxVolumeRef = useRef(0);
-
-  // Continuous-listening loop state
-  const liveModeRef = useRef(false);
-  const livePhaseRef = useRef<"idle" | "recording">("idle");
-  const liveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const resumeAtRef = useRef(0);
-  const recordingStartRef = useRef(0);
-  const lastSpeechTimeRef = useRef(0);
-
-  // Keep refs in sync with the state the loop's interval callback needs to
-  // read fresh each tick without being recreated on every render.
-  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
-  useEffect(() => { statusRef.current = status; }, [status]);
-
-  // ── Audio playback ────────────────────────────────────────────────────────
-
-  const stopCurrentAudio = useCallback(() => {
-    // Barge-in / starting a fresh turn both mean "throw away whatever's
-    // queued", not just the clip currently playing.
-    audioQueueRef.current = [];
-    if (currentAudioRef.current) {
-      currentAudioRef.current.pause();
-      currentAudioRef.current = null;
+  // ── Status: derived from local player + recorder only ───────────────────
+  const recomputeStatus = useCallback(() => {
+    let s: AgentStatus = "idle";
+    const voice = r.mode === "live" || r.mode === "lite";
+    if (r.player?.isPlaying) s = "speaking";
+    else if (voice && r.micOn && r.endpointer.speaking) s = "listening";
+    else if (r.busy || r.toolsPending || Date.now() < r.awaitingUntil) s = "thinking";
+    if (s !== r.status) {
+      r.status = s;
+      setStatus(s);
     }
-  }, []);
+  }, [r]);
 
-  const playNextInQueue = useCallback(() => {
-    const next = audioQueueRef.current.shift();
-    if (!next) {
-      currentAudioRef.current = null;
-      // Brief cooldown before the continuous loop starts listening for
-      // onset again, so any speaker bleed/echo tail isn't mistaken for
-      // the start of the next turn. Only fires once the whole queue (i.e.
-      // the whole reply) has finished playing.
-      resumeAtRef.current = Date.now() + RESUME_COOLDOWN_MS;
-      setStatus("idle");
-      return;
+  const setModeBoth = useCallback((m: VoiceMode) => {
+    r.mode = m;
+    setMode(m);
+  }, [r]);
+
+  const setMicBoth = useCallback((on: boolean) => {
+    r.micOn = on;
+    setMicOn(on);
+  }, [r]);
+
+  const showNotice = useCallback((text: string) => {
+    if (r.noticeTimer) clearTimeout(r.noticeTimer);
+    setNotice(text);
+    r.noticeTimer = setTimeout(() => setNotice(null), 7000);
+  }, [r]);
+
+  const addMessages = useCallback((msgs: TranscriptMessage[]) => {
+    if (msgs.length === 0) return;
+    r.messages = [...r.messages, ...msgs];
+    setMessages(r.messages);
+  }, [r]);
+
+  const applyTurn = useCallback((turn: Turn) => {
+    if (turn.profile) {
+      r.profile = turn.profile;
+      setProfile(turn.profile);
     }
-    try {
-      const binary = atob(next);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: "audio/mpeg" });
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      currentAudioRef.current = audio;
-      audio.play().catch(() => {});
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        playNextInQueue();
-      };
-    } catch {
-      playNextInQueue();
+    if (turn.events?.length) {
+      // Trace shows newest first; a response's events arrive oldest first.
+      const fresh = [...turn.events].reverse();
+      setEvents((prev) => [...fresh, ...prev].slice(0, 50));
     }
-  }, []);
-
-  const playAudio = useCallback((base64: string) => {
-    audioQueueRef.current.push(base64);
-    // If nothing's playing right now, this chunk starts immediately —
-    // otherwise it waits its turn behind whatever's already queued.
-    if (!currentAudioRef.current) playNextInQueue();
-  }, [playNextInQueue]);
-
-  // ── WebSocket ─────────────────────────────────────────────────────────────
-
-  const connectWS = useCallback((sid: string) => {
-    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-
-    // Close existing
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.close();
-    }
-
-    const ws = new WebSocket(`${WS_URL}/ws/${sid}`);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setIsConnected(true);
-      setError(null);
-    };
-
-    ws.onclose = () => {
-      setIsConnected(false);
-      reconnectTimerRef.current = setTimeout(() => connectWS(sid), 2000);
-    };
-
-    ws.onerror = () => {
-      // onclose handles reconnect
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data) as { type: string; data: Record<string, unknown>; timestamp: string };
-
-        switch (msg.type) {
-          case "transcript":
-            setTranscript((prev) => [
-              ...prev,
-              {
-                role: msg.data.role as "user" | "assistant",
-                text: msg.data.text as string,
-                timestamp: msg.timestamp,
-              },
-            ]);
-            break;
-
-          case "profile_update":
-            setProfile(msg.data as unknown as CustomerProfile);
-            break;
-
-          case "decision_event":
-            setEvents((prev) => [msg.data as unknown as DecisionEvent, ...prev].slice(0, 50));
-            break;
-
-          case "handoff":
-            setHandoff(msg.data as unknown as HandoffCard);
-            break;
-
-          case "status":
-            setStatus(msg.data.status as AgentStatus);
-            break;
-
-          case "audio_chunk":
-            setStatus("speaking");
-            playAudio(msg.data.audio as string);
-            break;
-
-          case "error":
-            setError(msg.data.message as string);
-            setStatus("idle");
-            break;
-
-          case "pong":
-            break;
-        }
-      } catch {
-        // ignore malformed
-      }
-    };
-  }, [playAudio]);
-
-  // ── Session init ──────────────────────────────────────────────────────────
-
-  const initSession = useCallback(async () => {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const res = await fetch(`${BACKEND_URL}/api/sessions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        setSessionId(data.session_id);
-        sessionIdRef.current = data.session_id;
-        setError(null);
-        return data.session_id as string;
-      } catch {
-        if (attempt === 3) {
-          setError(`Backend not reachable at ${BACKEND_URL}. Make sure the backend terminal is running.`);
-          return null;
-        }
-        await new Promise((r) => setTimeout(r, 1000 * attempt));
-      }
-    }
-    return null;
-  }, []);
-
-  // ── Mic acquisition ──────────────────────────────────────────────────────
-  // Acquired once per session and reused for the whole continuous loop.
-  const getMicStream = useCallback(async (): Promise<MediaStream> => {
-    if (micStreamRef.current && micStreamRef.current.getAudioTracks().some(t => t.readyState === "live")) {
-      return micStreamRef.current;
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        sampleRate: 16000,
-      }
-    });
-    micStreamRef.current = stream;
-
-    const audioCtx = audioContextRef.current ?? new AudioContext();
-    audioContextRef.current = audioCtx;
-    if (audioCtx.state === "suspended") await audioCtx.resume();
-    const source = audioCtx.createMediaStreamSource(stream);
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    source.connect(analyser);
-    analyserRef.current = analyser;
-
-    return stream;
-  }, []);
-
-  // Read-only live mic level for the orb's audio-reactive rendering — a
-  // getter (not React state) so a requestAnimationFrame loop can sample it
-  // every frame without forcing a re-render. Purely additive: reads the
-  // same analyser the VAD loop already uses, never touches recording.
-  const getInputLevel = useCallback((): number => {
-    const analyser = analyserRef.current;
-    if (!analyser) return 0;
-    const data = new Uint8Array(analyser.fftSize);
-    analyser.getByteTimeDomainData(data);
-    let peak = 0;
-    for (let i = 0; i < data.length; i++) {
-      const deviation = Math.abs(data[i] - 128);
-      if (deviation > peak) peak = deviation;
-    }
-    return Math.min(1, peak / 90);
-  }, []);
-
-  // ── Send audio ────────────────────────────────────────────────────────────
-
-  const sendAudio = useCallback(async (blob: Blob) => {
-    const sid = sessionIdRef.current;
-    if (!sid) return;
-
-    setStatus("thinking");
-
-    // Safety net — never hang forever
-    if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-    safetyTimerRef.current = setTimeout(() => setStatus("idle"), 25000);
-
-    const formData = new FormData();
-    formData.append("audio", blob, "audio.webm");
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${sid}/audio`, {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-
-      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-
-      if (data.audio) {
-        setStatus("speaking");
-        playAudio(data.audio);
-      } else if (!data.transcript) {
-        setError("Didn't catch that — try again.");
-        resumeAtRef.current = Date.now() + RESUME_COOLDOWN_MS;
-        setStatus("idle");
-      } else {
-        setError("Got your message, but couldn't generate a voice reply.");
-        resumeAtRef.current = Date.now() + RESUME_COOLDOWN_MS;
-        setStatus("idle");
-      }
-    } catch {
-      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-      setError("Failed to process audio.");
-      resumeAtRef.current = Date.now() + RESUME_COOLDOWN_MS;
-      setStatus("idle");
-    }
-  }, [playAudio]);
-
-  // ── One utterance recording ──────────────────────────────────────────────
-  // Started automatically by the continuous loop below when it detects
-  // speech onset. Stops either when the loop detects trailing silence, or
-  // when the user taps the orb mid-utterance to send early.
-
-  const beginUtteranceRecording = useCallback(() => {
-    const stream = micStreamRef.current;
-    if (!stream || isRecordingRef.current) return;
-
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus"
-      : MediaRecorder.isTypeSupported("audio/webm")
-      ? "audio/webm"
-      : "audio/ogg";
-
-    let recorder: MediaRecorder;
-    try {
-      recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128000 });
-    } catch {
-      return;
-    }
-
-    mediaRecorderRef.current = recorder;
-    audioChunksRef.current = [];
-    isRecordingRef.current = true;
-    livePhaseRef.current = "recording";
-    maxVolumeRef.current = 0;
-    recordingStartRef.current = Date.now();
-    lastSpeechTimeRef.current = recordingStartRef.current;
-    setStatus("listening");
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunksRef.current.push(e.data);
-    };
-
-    recorder.onstop = async () => {
-      isRecordingRef.current = false;
-      livePhaseRef.current = "idle";
-      const duration = Date.now() - recordingStartRef.current;
-      const blob = new Blob(audioChunksRef.current, { type: mimeType });
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`[MIC] blob size: ${blob.size} bytes, duration: ${duration}ms, peak volume: ${maxVolumeRef.current}`);
-      }
-
-      // A blip that doesn't hold up as real speech (background noise,
-      // a brief knock) — in a continuous always-on session these should be
-      // invisible, not error toasts, since the recording was never
-      // something the user deliberately started.
-      if (duration <= 300 || maxVolumeRef.current < 6 || blob.size <= 500) {
-        resumeAtRef.current = Date.now() + 150;
-        setStatus("idle");
-        return;
-      }
-
-      await sendAudio(blob);
-    };
-
-    recorder.start(100);
-  }, [sendAudio]);
-
-  const stopCurrentUtterance = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.stop();
-      livePhaseRef.current = "idle";
-      setStatus("thinking");
-    }
-  }, []);
-
-  // ── Continuous listening loop ────────────────────────────────────────────
-  // Runs for the lifetime of the session. While idle and live, it watches
-  // for speech onset and starts a recording automatically; while recording,
-  // it watches for trailing silence and stops automatically. No tap needed
-  // between turns — this is what makes it feel like one continuous session
-  // instead of a manual record/send dance.
-
-  const runLiveLoopTick = useCallback(() => {
-    if (!liveModeRef.current) return;
-    const analyser = analyserRef.current;
-    if (!analyser) return;
-
-    const dataArray = new Uint8Array(analyser.fftSize);
-    analyser.getByteTimeDomainData(dataArray);
-    let peak = 0;
-    for (let i = 0; i < dataArray.length; i++) {
-      const deviation = Math.abs(dataArray[i] - 128);
-      if (deviation > peak) peak = deviation;
-    }
-
-    const now = Date.now();
-
-    if (livePhaseRef.current === "idle") {
-      // Only start listening for a new turn once the agent has fully
-      // finished its own turn, and the brief post-speech cooldown has passed.
-      if (statusRef.current !== "idle") return;
-      if (now < resumeAtRef.current) return;
-      if (peak > SPEECH_VOLUME_THRESHOLD) beginUtteranceRecording();
-      return;
-    }
-
-    // Actively recording — watch for trailing silence to auto-stop.
-    if (peak > maxVolumeRef.current) maxVolumeRef.current = peak;
-    if (peak > SPEECH_VOLUME_THRESHOLD) lastSpeechTimeRef.current = now;
-
-    const sinceStart = now - recordingStartRef.current;
-    const sinceSpeech = now - lastSpeechTimeRef.current;
-    const shouldAutoStop =
-      (sinceStart > MIN_RECORDING_MS && sinceSpeech > SILENCE_TIMEOUT_MS) ||
-      sinceStart > MAX_RECORDING_MS;
-
-    if (shouldAutoStop && mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop();
-      livePhaseRef.current = "idle";
-      setStatus("thinking");
-    }
-  }, [beginUtteranceRecording]);
-
-  const startLiveLoop = useCallback(() => {
-    if (liveIntervalRef.current) return;
-    liveIntervalRef.current = setInterval(runLiveLoopTick, VOLUME_SAMPLE_MS);
-  }, [runLiveLoopTick]);
-
-  const toggleLiveMode = useCallback(() => {
-    if (statusRef.current === "listening") {
-      // Mid-utterance — a tap here means "I'm done", not "mute". Stop and
-      // send immediately instead of waiting for the silence timeout.
-      stopCurrentUtterance();
-      return;
-    }
-    if (statusRef.current === "speaking") {
-      // Barge in — we actually control this audio element locally, so we can
-      // cut it off immediately and return to listening. ("thinking" isn't
-      // interruptible the same way: that's an in-flight network request, and
-      // stopping locally wouldn't stop the reply from arriving and playing
-      // moments later, so the button stays disabled during that phase.)
-      stopCurrentAudio();
-      resumeAtRef.current = Date.now() + 150;
-      setStatus("idle");
-      return;
-    }
-    // Otherwise: idle — toggle the continuous loop on/off (mute/unmute).
-    if (!liveModeRef.current) {
-      // Voice was never started (e.g. a chat-only session) or the mic
-      // stream was never acquired — get it now, on demand, instead of
-      // silently flipping a flag that nothing is listening to.
-      if (!micStreamRef.current) {
-        getMicStream()
-          .then(() => {
-            liveModeRef.current = true;
-            setLiveMode(true);
-            resumeAtRef.current = Date.now() + 150;
-            startLiveLoop();
-          })
-          .catch(() => {
-            // Most likely cause: the browser already remembers a prior
-            // "block" decision for this site and won't re-prompt on its
-            // own — getUserMedia() just rejects immediately in that case.
-            setError("Couldn't access your microphone. If you previously blocked it, allow microphone access for this site in your browser's address-bar/site settings, then tap the orb again.");
-          });
-        return;
-      }
-      liveModeRef.current = true;
-      setLiveMode(true);
-      resumeAtRef.current = Date.now() + 150;
-      return;
-    }
-    liveModeRef.current = false;
-    setLiveMode(false);
-  }, [stopCurrentUtterance, stopCurrentAudio, getMicStream, startLiveLoop]);
-
-  // ── Start session ─────────────────────────────────────────────────────────
-
-  // withVoice=false skips mic acquisition entirely (no permission prompt,
-  // no background listening) — for a "just chat" entry point. The mic can
-  // still be turned on later on demand via toggleLiveMode tapping the orb.
-  const start = useCallback(async (withVoice: boolean = true) => {
+    if (turn.handoff && turn.handoff_card) setHandoff(turn.handoff_card);
+    if (turn.visa) setVisa(turn.visa);
     setError(null);
-    setStatus("idle");
-    const sid = await initSession();
-    if (!sid) return null;
-    connectWS(sid);
-    if (withVoice) {
-      try {
-        await getMicStream();
-        liveModeRef.current = true;
-        setLiveMode(true);
-        resumeAtRef.current = Date.now() + 300;
-        startLiveLoop();
-      } catch {
-        // Mic permission denied or unavailable — session still starts (text
-        // input keeps working); the orb will show its muted state.
-        liveModeRef.current = false;
-        setLiveMode(false);
-      }
-    }
-    return sid;
-  }, [initSession, connectWS, getMicStream, startLiveLoop]);
+    setNetworkDown(false);
+  }, [r]);
 
-  // ── Send text ─────────────────────────────────────────────────────────────
-
-  const sendText = useCallback(async (text: string) => {
-    const sid = sessionIdRef.current;
-    if (!sid || !text.trim()) return;
-    stopCurrentAudio();
-    setStatus("thinking");
-
-    if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-    safetyTimerRef.current = setTimeout(() => setStatus("idle"), 25000);
-
+  // ── Cold start: wake the free-tier server ───────────────────────────────
+  const checkHealth = useCallback(async () => {
+    setBackend("waking");
     try {
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${sid}/text`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      const data = await res.json();
-
-      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-
-      if (data.reply) {
-        // Audio comes via WebSocket audio_chunk — status will update there
-      }
-      // Status will be set by ws audio_chunk → speaking → idle on end
+      await api.health(HEALTH_TIMEOUT_MS);
+      setBackend("ready");
+      // Warm the Live SDK chunk so the first connect doesn't wait on it.
+      if (ENABLE_LIVE) void import("@google/genai").catch(() => {});
     } catch {
-      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-      setError("Failed to send message.");
-      setStatus("idle");
+      setBackend("down");
     }
-  }, [stopCurrentAudio]);
-
-  // ── Cleanup ───────────────────────────────────────────────────────────────
+  }, []);
 
   useEffect(() => {
-    return () => {
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current);
-      if (liveIntervalRef.current) clearInterval(liveIntervalRef.current);
-      wsRef.current?.close();
-      if (mediaRecorderRef.current && isRecordingRef.current) {
-        mediaRecorderRef.current.stop();
+    void checkHealth();
+  }, [checkHealth]);
+
+  // ── Sessions (+ 404 recovery) ───────────────────────────────────────────
+  const adoptSession = useCallback((sid: string, greeting: string | null, prof: CustomerProfile | null) => {
+    r.sessionId = sid;
+    setSessionId(sid);
+    if (greeting) r.greeting = greeting;
+    if (prof) {
+      r.profile = prof;
+      setProfile(prof);
+    }
+  }, [r]);
+
+  const createSession = useCallback(async () => {
+    const res = await api.createSession();
+    adoptSession(res.session_id, res.greeting, res.profile);
+    return res.session_id;
+  }, [adoptSession]);
+
+  /** The backend lost our session (restart): rebuild it from what we know. */
+  const recreateSession = useCallback((staleSid: string): Promise<string> => {
+    if (r.sessionId && r.sessionId !== staleSid) return Promise.resolve(r.sessionId);
+    if (r.recreating) return r.recreating;
+    const seed: Record<string, unknown> = {};
+    for (const k of SEED_FIELDS) {
+      const v = r.profile[k];
+      if (v !== null && v !== undefined) seed[k] = v;
+    }
+    // Skip the message being sent right now: the retried call delivers it.
+    const history: HistoryTurn[] = r.messages
+      .filter((m) => !m.partial && m !== r.inflight)
+      .slice(-HISTORY_LIMIT)
+      .map(({ role, text }) => ({ role, text }));
+    if (process.env.NODE_ENV !== "production") console.info("[session] 404 — recreating with seed + history");
+    r.recreating = api
+      .createSession({ seed_profile: seed as Partial<CustomerProfile>, history })
+      .then((res) => {
+        // Keep the richer local profile if the server's seeded copy lags.
+        adoptSession(res.session_id, null, res.profile ?? null);
+        return res.session_id;
+      })
+      .finally(() => {
+        r.recreating = null;
+      });
+    return r.recreating;
+  }, [r, adoptSession]);
+
+  const withSession = useCallback(async <T,>(fn: (sid: string) => Promise<T>): Promise<T> => {
+    const sid = r.sessionId ?? (await createSession());
+    try {
+      return await fn(sid);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        const fresh = await recreateSession(sid);
+        return fn(fresh); // retry exactly once
       }
-      micStreamRef.current?.getTracks().forEach((t) => t.stop());
-      audioContextRef.current?.close().catch(() => {});
+      if (e instanceof ApiError && e.status === 0) setNetworkDown(true);
+      throw e;
+    }
+  }, [r, createSession, recreateSession]);
+
+  // ── Text-mode greeting + mode switching ─────────────────────────────────
+  const showGreetingIfEmpty = useCallback(() => {
+    if (r.messages.length === 0 && r.greeting) {
+      addMessages([{ role: "assistant", text: r.greeting, timestamp: nowIso() }]);
+    }
+  }, [r, addMessages]);
+
+  const switchToText = useCallback((why?: string) => {
+    r.capture?.stop();
+    r.capture = null;
+    r.stream?.getTracks().forEach((t) => t.stop());
+    r.stream = null;
+    r.endpointer.reset();
+    setMicBoth(false);
+    setModeBoth("text");
+    showGreetingIfEmpty();
+    if (why) showNotice(why);
+    recomputeStatus();
+  }, [r, setMicBoth, setModeBoth, showGreetingIfEmpty, showNotice, recomputeStatus]);
+
+  const switchToLite = useCallback((reason: LiveFallbackReason, detail?: string) => {
+    if (process.env.NODE_ENV !== "production") console.warn(`[live] fallback → lite (${reason}) ${detail ?? ""}`);
+    r.player?.flush();
+    r.endpointer.reset();
+    r.toolsPending = false;
+    r.awaitingUntil = 0;
+    r.suppressLiveAudio = false;
+    setPartials({});
+    setConnecting(false);
+    if (!r.capture) {
+      switchToText("Voice isn't available right now. You can keep chatting by text.");
+      return;
+    }
+    setModeBoth("lite");
+    showGreetingIfEmpty();
+    showNotice(FALLBACK_NOTICE[reason]);
+    recomputeStatus();
+  }, [r, setModeBoth, showGreetingIfEmpty, showNotice, switchToText, recomputeStatus]);
+
+  // ── Live session wiring ─────────────────────────────────────────────────
+  const live = useLiveSession({
+    withSession,
+    onAudio(pcm, rate) {
+      if (r.mode !== "live" || r.suppressLiveAudio || !r.player) return;
+      r.awaitingUntil = 0;
+      r.player.enqueuePcm16(pcm, rate);
+    },
+    onInterrupted() {
+      r.suppressLiveAudio = false;
+      r.player?.flush();
+      recomputeStatus();
+    },
+    onModelTurnComplete() {
+      r.suppressLiveAudio = false;
+      r.awaitingUntil = 0;
+      setError(null);
+      recomputeStatus();
+    },
+    onPartial(role, text, timestamp) {
+      setPartials((p) => ({
+        ...p,
+        [role]: text === null ? undefined : { role, text, timestamp, partial: true },
+      }));
+    },
+    onFinalTurns(turns: FinalTurn[]) {
+      addMessages(turns.map((t) => ({ role: t.role, text: t.text, timestamp: t.timestamp })));
+    },
+    onToolsPending(pending) {
+      r.toolsPending = pending;
+      recomputeStatus();
+    },
+    onToolsTurn(turn) {
+      applyTurn(turn);
+    },
+    onFallback(reason, detail) {
+      switchToLite(reason, detail);
+    },
+  });
+
+  // ── Lite turn: WAV → /audio → one MP3 clip ──────────────────────────────
+  const sendLiteUtterance = useCallback(async (chunks: Int16Array[]) => {
+    r.busy = true;
+    recomputeStatus();
+    const wav = encodeWav(concatPcm16(chunks), 16000);
+    try {
+      const turn = await withSession((sid) => api.audio(sid, wav));
+      applyTurn(turn);
+      const ts = nowIso();
+      const add: TranscriptMessage[] = [];
+      if (turn.user_transcript?.trim()) add.push({ role: "user", text: turn.user_transcript.trim(), timestamp: ts });
+      if (turn.reply?.trim()) add.push({ role: "assistant", text: turn.reply.trim(), timestamp: ts });
+      addMessages(add);
+      if (!turn.user_transcript?.trim() && !turn.reply?.trim()) setError("Didn't catch that. Try again.");
+      if (turn.audio_b64 && r.player && r.mode === "lite") {
+        await r.player.playEncoded(base64ToBytes(turn.audio_b64)).catch(() => {
+          setError("Got Aria's reply but couldn't play the audio.");
+        });
+      }
+    } catch (e) {
+      setError(describeError(e, "Couldn't process that audio. Try again."));
+    } finally {
+      r.busy = false;
+      r.cooldownUntil = Date.now() + LITE_COOLDOWN_MS;
+      r.endpointer.reset();
+      recomputeStatus();
+    }
+  }, [r, withSession, applyTurn, addMessages, recomputeStatus]);
+
+  // ── Mic chunk router ────────────────────────────────────────────────────
+  const onMicChunk = useCallback((pcm: Int16Array, rms: number) => {
+    if (!r.micOn) {
+      r.level = 0;
+      return;
+    }
+    r.level = rms;
+
+    if (r.mode === "live") {
+      // Always stream (Gemini handles barge-in); local detector only drives
+      // the status, and is paused while Aria is audible so echo can't flip it.
+      live.sendAudio(pcm);
+      if (r.player?.isPlaying) {
+        r.endpointer.reset();
+        return;
+      }
+      const ev = r.endpointer.push(pcm, rms);
+      if (ev?.type === "end") {
+        r.awaitingUntil = Date.now() + LIVE_THINKING_WINDOW_MS;
+        if (r.awaitingTimer) clearTimeout(r.awaitingTimer);
+        r.awaitingTimer = setTimeout(recomputeStatus, LIVE_THINKING_WINDOW_MS + 20);
+      }
+      if (ev) recomputeStatus();
+      return;
+    }
+
+    if (r.mode === "lite") {
+      // Echo guard: the mic is deaf while Aria talks, while a turn is in
+      // flight, and for a short tail afterwards.
+      if (r.player?.isPlaying || r.busy || Date.now() < r.cooldownUntil) return;
+      const ev = r.endpointer.push(pcm, rms);
+      if (!ev) return;
+      if (ev.type === "end") void sendLiteUtterance(ev.audio);
+      else recomputeStatus();
+    }
+  }, [r, live, sendLiteUtterance, recomputeStatus]);
+
+  // ── Audio bring-up ──────────────────────────────────────────────────────
+  /**
+   * MUST run synchronously inside the user's tap: iOS only lets an
+   * AudioContext start (and play) from a gesture.
+   */
+  const prepareAudioInGesture = useCallback(() => {
+    setPlayAndRecordSession();
+    if (!r.ctx || r.ctx.state === "closed") {
+      const Ctx: typeof AudioContext =
+        window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      r.ctx = new Ctx();
+      r.player = new PcmPlayer(r.ctx);
+      r.player.onStart = () => recomputeStatus();
+      r.player.onIdle = () => {
+        if (r.mode === "lite") {
+          r.cooldownUntil = Date.now() + LITE_COOLDOWN_MS;
+          r.endpointer.reset();
+        }
+        recomputeStatus();
+      };
+    }
+    void r.ctx.resume().catch(() => {});
+  }, [r, recomputeStatus]);
+
+  /** Mic + worklet, then Live (or Lite). Call after prepareAudioInGesture(). */
+  const beginVoice = useCallback(async (micPromise?: Promise<MediaStream>): Promise<boolean> => {
+    if (!r.ctx) return false;
+    if (!supportsAudioWorklet()) {
+      switchToText("Voice isn't supported in this browser. You can keep chatting by text.");
+      return false;
+    }
+    try {
+      if (!r.stream) r.stream = await (micPromise ?? requestMicStream());
+    } catch {
+      setError("Couldn't access your microphone. If you blocked it, allow microphone access for this site in your browser's site settings, then tap the orb again.");
+      switchToText();
+      return false;
+    }
+    try {
+      if (!r.capture) r.capture = await startMicCapture(r.ctx, r.stream, onMicChunk);
+    } catch (e) {
+      if (process.env.NODE_ENV !== "production") console.warn("[mic] capture failed", e);
+      switchToText(
+        e instanceof AudioWorkletUnsupportedError
+          ? "Voice isn't supported in this browser. You can keep chatting by text."
+          : "Couldn't start the microphone. You can keep chatting by text.",
+      );
+      return false;
+    }
+    r.endpointer.reset();
+    setMicBoth(true);
+
+    if (ENABLE_LIVE) {
+      setModeBoth("live");
+      setConnecting(true);
+      recomputeStatus();
+      const greet = r.messages.length === 0;
+      // Aria greets first on a fresh conversation; mid-conversation (e.g.
+      // after Just Chat) she just starts listening. On failure
+      // useLiveSession has already called onFallback → lite.
+      await live.connect({ greet });
+      setConnecting(false);
+    } else {
+      setModeBoth("lite");
+      showGreetingIfEmpty();
+    }
+    recomputeStatus();
+    return true;
+  }, [r, live, onMicChunk, setMicBoth, setModeBoth, switchToText, showGreetingIfEmpty, recomputeStatus]);
+
+  // ── Public actions ──────────────────────────────────────────────────────
+
+  /** Landing CTA. withVoice=false is "Just Chat" (no mic prompt). */
+  const start = useCallback(async (withVoice: boolean = true): Promise<string | null> => {
+    setError(null);
+    let micPromise: Promise<MediaStream> | undefined;
+    if (withVoice) {
+      prepareAudioInGesture(); // synchronous, still inside the tap
+      if (supportsAudioWorklet()) {
+        micPromise = requestMicStream();
+        micPromise.catch(() => {}); // handled in beginVoice
+      }
+    }
+    let sid: string;
+    try {
+      sid = r.sessionId ?? (await createSession());
+    } catch (e) {
+      setError(describeError(e, "Couldn't start a session with Aria. Try again."));
+      micPromise?.then((s) => s.getTracks().forEach((t) => t.stop())).catch(() => {});
+      return null;
+    }
+    if (!withVoice) {
+      setModeBoth("text");
+      showGreetingIfEmpty();
+      return sid;
+    }
+    await beginVoice(micPromise);
+    return sid;
+  }, [r, prepareAudioInGesture, createSession, setModeBoth, showGreetingIfEmpty, beginVoice]);
+
+  /** Orb tap: start voice / barge-in / "I'm done" / mute toggle. */
+  const toggleLiveMode = useCallback(() => {
+    if (!r.capture) {
+      prepareAudioInGesture();
+      void beginVoice();
+      return;
+    }
+    void r.ctx?.resume().catch(() => {});
+    const s = r.status;
+    if (s === "speaking") {
+      r.player?.flush();
+      if (r.mode === "live") r.suppressLiveAudio = true;
+      else r.cooldownUntil = Date.now() + 150;
+      recomputeStatus();
+      return;
+    }
+    if (s === "listening") {
+      if (r.mode === "lite") {
+        const ev = r.endpointer.forceEnd();
+        if (ev?.type === "end") void sendLiteUtterance(ev.audio);
+      } else {
+        r.endpointer.reset();
+        live.endAudioStream();
+      }
+      recomputeStatus();
+      return;
+    }
+    // Idle: mute / unmute.
+    const next = !r.micOn;
+    setMicBoth(next);
+    r.endpointer.reset();
+    if (!next && r.mode === "live") live.endAudioStream();
+    if (next && r.mode === "lite") r.cooldownUntil = Date.now() + 150;
+    recomputeStatus();
+  }, [r, live, prepareAudioInGesture, beginVoice, sendLiteUtterance, setMicBoth, recomputeStatus]);
+
+  const sendText = useCallback(async (text: string) => {
+    const message = text.trim();
+    if (!message) return;
+
+    if (r.mode === "live" && live.isOpen()) {
+      r.player?.flush();
+      if (live.sendText(message)) return;
+    }
+
+    r.player?.flush();
+    const userMsg: TranscriptMessage = { role: "user", text: message, timestamp: nowIso() };
+    addMessages([userMsg]);
+    r.inflight = userMsg;
+    r.busy = true;
+    recomputeStatus();
+    // Speak replies only when the caller is in a voice session.
+    const tts = r.mode !== "text" && !!r.player;
+    try {
+      const turn = await withSession((sid) => api.text(sid, message, tts));
+      applyTurn(turn);
+      if (turn.reply?.trim()) addMessages([{ role: "assistant", text: turn.reply.trim(), timestamp: nowIso() }]);
+      if (turn.audio_b64 && r.player && r.mode !== "text") {
+        await r.player.playEncoded(base64ToBytes(turn.audio_b64)).catch(() => {});
+      }
+    } catch (e) {
+      setError(describeError(e, "Failed to send message. Try again."));
+    } finally {
+      r.inflight = null;
+      r.busy = false;
+      recomputeStatus();
+    }
+  }, [r, live, addMessages, withSession, applyTurn, recomputeStatus]);
+
+  /** 0–1 mic level for the orb (sampled every animation frame). */
+  const getInputLevel = useCallback((): number => {
+    if (!r.micOn) return 0;
+    return Math.min(1, r.level * 7);
+  }, [r]);
+
+  const dismissNotice = useCallback(() => setNotice(null), []);
+
+  // ── Teardown ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      live.disconnect();
+      if (r.awaitingTimer) clearTimeout(r.awaitingTimer);
+      if (r.noticeTimer) clearTimeout(r.noticeTimer);
+      r.capture?.stop();
+      r.capture = null;
+      r.stream?.getTracks().forEach((t) => t.stop());
+      r.stream = null;
+      r.player?.dispose();
+      r.player = null;
+      void r.ctx?.close().catch(() => {});
+      r.ctx = null;
     };
-  }, []);
+  }, [r, live]);
+
+  const transcript = useMemo(() => {
+    const out = [...messages];
+    if (partials.user) out.push(partials.user);
+    if (partials.assistant) out.push(partials.assistant);
+    return out;
+  }, [messages, partials]);
 
   return {
+    backend,
+    retryHealth: checkHealth,
     sessionId,
+    mode,
     status,
     transcript,
     profile,
     events,
     handoff,
-    isConnected,
+    visa,
+    isConnected: backend === "ready" && !networkDown,
+    connecting,
     error,
-    liveMode,
+    notice,
+    dismissNotice,
+    liveMode: micOn,
     start,
     toggleLiveMode,
     sendText,
-    isRecording: isRecordingRef,
     getInputLevel,
   };
 }

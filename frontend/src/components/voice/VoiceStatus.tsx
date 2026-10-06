@@ -1,67 +1,91 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
-import { AgentStatus } from "@/lib/types";
+import { WifiOff } from "lucide-react";
+import clsx from "clsx";
+import { AgentStatus, VoiceMode } from "@/lib/types";
 
 interface Props {
   status: AgentStatus;
+  /** Mic is open (not muted). */
   liveMode: boolean;
-  /** True when the last turn failed — renders the Error state instead of Ready/idle copy. */
+  mode: VoiceMode;
+  /** Live connection still being set up. */
+  connecting?: boolean;
+  /** True when the last turn failed — renders the error copy instead of idle copy. */
   hasError?: boolean;
+  isConnected: boolean;
 }
 
-function getStatusText(status: AgentStatus, liveMode: boolean, hasError?: boolean): string {
-  if (hasError) return "Something went wrong · tap to retry";
+const MODE_BADGE: Record<VoiceMode, { label: string; title: string }> = {
+  live: { label: "Live", title: "Live voice: real-time, interruptible speech-to-speech" },
+  lite: { label: "Lite", title: "Lite voice: Aria replies after you finish speaking" },
+  text: { label: "Text", title: "Text chat: no microphone in use" },
+};
+
+function getStatusText(status: AgentStatus, liveMode: boolean, mode: VoiceMode, connecting?: boolean, hasError?: boolean): string {
+  if (connecting && status === "idle") return "Connecting";
+  if (hasError && status === "idle") return "Something went wrong. Try again";
   switch (status) {
-    case "listening": return "Listening — tap when done";
+    case "listening": return mode === "live" ? "Listening" : "Listening · tap when done";
     case "thinking":  return "Thinking";
     case "speaking":  return "Speaking · tap to interrupt";
-    default:          return liveMode ? "Live — just start talking" : "Muted — tap to resume";
+    default:
+      if (mode === "text") return "Type, or tap the orb to talk";
+      return liveMode ? "Just start talking" : "Muted · tap the orb to resume";
   }
 }
 
-function getStatusColor(status: AgentStatus, liveMode: boolean, hasError?: boolean): string {
-  if (hasError) return "#F0525A";
-  switch (status) {
-    case "listening": return "#F0525A";
-    case "thinking":  return "#8B93A8";
-    case "speaking":  return "#F5A623";
-    default:          return liveMode ? "#FF8A65" : "#5E594E";
-  }
+function toneFor(status: AgentStatus, hasError?: boolean) {
+  if (hasError && status === "idle") return "text-danger";
+  if (status === "thinking") return "text-think";
+  if (status === "listening" || status === "speaking") return "text-accent";
+  return "text-ink-2";
 }
 
-export function VoiceStatus({ status, liveMode, hasError }: Props) {
-  const color = getStatusColor(status, liveMode, hasError);
-  const text = getStatusText(status, liveMode, hasError);
+export function ModeBadge({ mode, isConnected }: { mode: VoiceMode; isConnected: boolean }) {
+  const badge = MODE_BADGE[mode];
+  return (
+    <span
+      className={clsx(
+        "inline-flex items-center gap-1.5 h-6 px-2 rounded-md border font-mono text-[11px] font-medium leading-none",
+        !isConnected
+          ? "border-[rgba(240,138,126,0.4)] text-danger"
+          : mode === "live"
+          ? "border-accent-line text-accent"
+          : "border-line-strong text-ink-2",
+      )}
+      title={isConnected ? badge.title : "Can't reach Aria's server"}
+      role="status"
+      aria-live="polite"
+      data-testid="mode-badge"
+    >
+      {isConnected
+        ? <span className={clsx("w-1.5 h-1.5 rounded-full", mode === "live" ? "bg-accent" : "bg-ink-3")} aria-hidden="true" />
+        : <WifiOff className="w-3 h-3" aria-hidden="true" />}
+      {isConnected ? badge.label : "Offline"}
+    </span>
+  );
+}
+
+export function VoiceStatus({ status, liveMode, mode, connecting, hasError, isConnected }: Props) {
+  const text = getStatusText(status, liveMode, mode, connecting, hasError);
+  const active = status !== "idle" || connecting;
 
   return (
-    <div className="flex flex-col items-center gap-1.5 select-none">
-      <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1 min-h-6 px-4">
+      <ModeBadge mode={mode} isConnected={isConnected} />
+      <p
+        className={clsx("text-[15px] font-medium leading-6 transition-colors duration-300 inline-flex items-center gap-2", toneFor(status, hasError))}
+        role="status"
+        aria-live="polite"
+        data-testid="voice-status"
+      >
         <span
-          className="w-1.5 h-1.5 rounded-full pulse-dot"
-          style={{ background: color }}
+          className={clsx("w-1.5 h-1.5 rounded-full bg-current", active && "breathe")}
           aria-hidden="true"
         />
-        <p className="text-sm font-semibold font-display tracking-tight" style={{ color: "var(--ink)" }}>
-          Aria
-        </p>
-      </div>
-
-      <div className="h-6 relative w-[280px]" role="status" aria-live="polite">
-        <AnimatePresence mode="wait">
-          <motion.p
-            key={text}
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-            className="text-[11px] font-semibold tracking-[0.14em] uppercase absolute inset-x-0 text-center leading-relaxed"
-            style={{ color }}
-          >
-            {text}
-          </motion.p>
-        </AnimatePresence>
-      </div>
+        {text}
+      </p>
     </div>
   );
 }

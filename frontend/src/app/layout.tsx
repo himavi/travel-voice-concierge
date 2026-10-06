@@ -1,45 +1,63 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk, Inter } from "next/font/google";
+import { Instrument_Serif, Instrument_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-// Self-hosted via next/font — no external CDN request, zero layout shift,
-// and it keeps working the same on free static hosting.
-const displayFont = Space_Grotesk({
+// Self-hosted via next/font: no external font request, no layout shift.
+// Instrument Serif for display, Instrument Sans for UI, JetBrains Mono for
+// the engineering surfaces (decision trace, timestamps, provenance).
+const serif = Instrument_Serif({
   subsets: ["latin"],
-  weight: ["500", "600", "700"],
-  variable: "--font-display",
+  weight: "400",
+  style: ["normal", "italic"],
+  variable: "--font-serif",
   display: "swap",
 });
 
-const bodyFont = Inter({
+const sans = Instrument_Sans({
   subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-body",
+  variable: "--font-sans",
   display: "swap",
 });
+
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-mono",
+  display: "swap",
+});
+
+const description =
+  "Aria is a voice-first AI travel & visa concierge. Talk about your trip; she answers visa questions from a verified, dated knowledge base and builds your travel profile live.";
 
 export const metadata: Metadata = {
-  title: "Atlys Travel Concierge — AI Voice Agent",
-  description: "Talk to Aria, your AI travel concierge — visa requirements, trip planning, and instant answers, entirely by voice.",
+  title: "Aria — AI travel & visa concierge",
+  description,
+  applicationName: "Aria",
+  authors: [{ name: "Himanshu Kumar Singh", url: "https://hksingh.vercel.app" }],
   openGraph: {
-    title: "Atlys Travel Concierge",
-    description: "Talk to Aria, your AI travel concierge — visa requirements, trip planning, and instant answers, entirely by voice.",
+    title: "Aria — AI travel & visa concierge",
+    description,
     type: "website",
+  },
+  twitter: {
+    card: "summary",
+    title: "Aria — AI travel & visa concierge",
+    description,
   },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#15110D",
+  viewportFit: "cover",
+  themeColor: "#0B0C0E",
+  colorScheme: "dark",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`}>
-      <body>
-        {children}
-      </body>
+    <html lang="en" className={`${serif.variable} ${sans.variable} ${mono.variable}`}>
+      <body>{children}</body>
     </html>
   );
 }

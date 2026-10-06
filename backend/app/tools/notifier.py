@@ -1,7 +1,7 @@
 """
-Sends an instant Telegram push notification to the business owner when a
-lead crosses the hot-lead threshold. Uses the free Telegram Bot API instead
-of a paid telephony service — zero ongoing cost.
+Telegram push notifications to the owner (free Telegram Bot API):
+- a hot-lead alert when a lead crosses the score threshold;
+- a handoff alert when a customer asks for a human.
 """
 
 import logging
@@ -9,7 +9,7 @@ import os
 
 import httpx
 
-from app.models.schemas import CustomerProfile
+from app.models.schemas import CustomerProfile, HandoffCard
 
 logger = logging.getLogger(__name__)
 
@@ -33,24 +33,49 @@ def _format_lead_alert(profile: CustomerProfile) -> str:
     return "\n".join(lines)
 
 
-async def send_lead_alert(profile: CustomerProfile) -> None:
-    """Best-effort push notification. Never raises — a failure here must
-    not break the conversation turn."""
+def _format_handoff_alert(profile: CustomerProfile, card: HandoffCard) -> str:
+    lines = [f"\U0001F64B Handoff requested — score {profile.lead_score}/100"]
+    if card.reason:
+        lines.append(f"Reason: {card.reason}")
+    for label, value in (
+        ("Name", profile.customer_name),
+        ("Destination", profile.destination),
+        ("Passport", profile.passport),
+        ("Purpose", profile.purpose),
+        ("When", profile.travel_dates or profile.travel_month),
+        ("Travelers", profile.travelers),
+    ):
+        if value:
+            lines.append(f"{label}: {value}")
+    if card.conversation_summary:
+        lines.append(f"\n{card.conversation_summary}")
+    lines.append(f"\nSession: {profile.session_id}")
+    return "\n".join(lines)
+
+
+async def _send(text: str, session_id: str, kind: str) -> None:
+    """Best-effort. Never raises: a failure here must not break a turn."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         logger.warning(
-            "Skipping lead alert for session %s: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured",
-            profile.session_id,
+            "Skipping %s alert for session %s: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured",
+            kind, session_id,
         )
         return
-
-    text = _format_lead_alert(profile)
-    url = TELEGRAM_API_URL.format(token=token)
-
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(url, json={"chat_id": chat_id, "text": text})
+            resp = await client.post(TELEGRAM_API_URL.format(token=token), json={"chat_id": chat_id, "text": text})
             resp.raise_for_status()
     except Exception:
-        logger.exception("Failed to send Telegram lead alert for session %s", profile.session_id)
+        # Don't log the exception text: httpx errors include the URL, which
+        # contains the bot token.
+        logger.warning("Failed to send Telegram %s alert for session %s", kind, session_id)
+
+
+async def send_lead_alert(profile: CustomerProfile) -> None:
+    await _send(_format_lead_alert(profile), profile.session_id, "lead")
+
+
+async def send_handoff_alert(profile: CustomerProfile, card: HandoffCard) -> None:
+    await _send(_format_handoff_alert(profile, card), profile.session_id, "handoff")

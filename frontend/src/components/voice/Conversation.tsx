@@ -1,46 +1,75 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { AnimatePresence } from "framer-motion";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { TranscriptMessage } from "@/lib/types";
 import { Message } from "./Message";
 
 interface Props {
   messages: TranscriptMessage[];
-  /** How many most-recent messages to keep mounted. */
-  limit?: number;
 }
 
-export function Conversation({ messages, limit = 4 }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const visible = messages.slice(-limit);
+/**
+ * Full transcript. Sticks to the bottom while the reader is at the bottom,
+ * and leaves them alone if they scrolled up to re-read something.
+ *
+ * Screen readers get one polite announcement per *finished* message (via a
+ * separate live region) instead of every growing partial from Live mode.
+ */
+export function Conversation({ messages }: Props) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
 
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  };
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  // Keep pinned to the bottom when the viewport changes height (mobile
+  // keyboard, sheet opening) so the latest line stays visible.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length]);
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (pinned.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-  if (visible.length === 0) return null;
+  const lastFinal = [...messages].reverse().find((m) => !m.partial);
 
   return (
     <div
-      className="w-full max-w-md px-4 relative"
-      aria-live="polite"
-      aria-label="Recent conversation"
+      ref={scrollRef}
+      onScroll={onScroll}
+      className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+      tabIndex={-1}
     >
-      {/* Fade the top edge so older messages scrolling off feel like they trail away, not clip */}
-      <div
-        aria-hidden="true"
-        className="absolute inset-x-0 top-0 h-6 pointer-events-none z-10"
-        style={{ background: "linear-gradient(to bottom, var(--canvas), transparent)" }}
-      />
-      <div className="max-h-[168px] overflow-y-auto overscroll-contain space-y-2 py-2 no-scrollbar">
-        <AnimatePresence initial={false}>
-          {visible.map((msg, i) => (
-            <Message key={`${msg.timestamp}-${i}`} message={msg} compact />
-          ))}
-        </AnimatePresence>
-        <div ref={bottomRef} />
+      <div className="max-w-2xl mx-auto w-full px-4 sm:px-6 py-6">
+        {messages.length === 0 ? (
+          <p className="text-center text-sm text-ink-3 pt-6">
+            Say hello, or type a message below.
+          </p>
+        ) : (
+          <ol className="space-y-5" aria-label="Conversation transcript">
+            {messages.map((msg, i) => (
+              <li key={`${msg.role}-${msg.timestamp}-${i}`}>
+                <Message message={msg} />
+              </li>
+            ))}
+          </ol>
+        )}
       </div>
+
+      <p className="sr-only" role="log" aria-live="polite" aria-atomic="true">
+        {lastFinal ? `${lastFinal.role === "user" ? "You" : "Aria"}: ${lastFinal.text}` : ""}
+      </p>
     </div>
   );
 }

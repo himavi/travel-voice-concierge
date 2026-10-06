@@ -1,50 +1,50 @@
 import type { Config } from "tailwindcss";
 
+// Colours live as CSS custom properties in globals.css (single source of
+// truth); Tailwind just exposes them as utilities.
 const config: Config = {
   content: [
     "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
   ],
-  darkMode: "class",
   theme: {
     extend: {
       fontFamily: {
-        display: ["var(--font-display)", "system-ui", "sans-serif"],
-        body: ["var(--font-body)", "system-ui", "sans-serif"],
+        serif: ["var(--font-serif)", "ui-serif", "Georgia", "serif"],
+        sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       colors: {
-        brand: {
-          50: "#fff3ee",
-          100: "#ffe1d5",
-          300: "#ffab8a",
-          500: "#ff6b4a",
-          600: "#f0563a",
-          700: "#e8523a",
-          900: "#8a2e1d",
+        bg: {
+          DEFAULT: "var(--bg)",
+          raised: "var(--bg-raised)",
+          overlay: "var(--bg-overlay)",
         },
-        slate: {
-          200: "#c3c8d4",
-          400: "#8b93a8",
-          600: "#5b6274",
-          800: "#2e3240",
+        line: {
+          DEFAULT: "var(--line)",
+          strong: "var(--line-strong)",
         },
         ink: {
-          DEFAULT: "#15110d",
-          50: "#f5f1ea",
-          800: "#1c1712",
-          900: "#12100d",
+          DEFAULT: "var(--ink)",
+          2: "var(--ink-2)",
+          3: "var(--ink-3)",
         },
-      },
-      animation: {
-        "pulse-slow": "pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite",
-        "score-fill": "score-fill 1s ease-out forwards",
-      },
-      keyframes: {
-        "score-fill": {
-          "0%": { width: "0%" },
-          "100%": { width: "var(--score-width)" },
+        accent: {
+          DEFAULT: "var(--accent)",
+          ink: "var(--accent-ink)",
+          soft: "var(--accent-soft)",
+          line: "var(--accent-line)",
         },
+        think: "var(--think)",
+        ok: "var(--ok)",
+        danger: "var(--danger)",
+      },
+      spacing: {
+        "safe-b": "env(safe-area-inset-bottom)",
+      },
+      transitionTimingFunction: {
+        out: "cubic-bezier(0.16, 1, 0.3, 1)",
       },
     },
   },

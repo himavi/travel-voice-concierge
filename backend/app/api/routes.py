@@ -1,154 +1,212 @@
 """
-FastAPI routes:
-  POST /api/sessions                  — create a new session
-  GET  /api/sessions/{id}/profile     — get current profile
-  POST /api/sessions/{id}/text        — send a text message
-  POST /api/sessions/{id}/audio       — send audio for STT + agent + TTS
-  WS   /ws/{session_id}               — real-time WebSocket connection
+HTTP API (contract: docs/API.md). Every update comes back in the response of
+the request that caused it; there is no WebSocket.
+
+  POST /api/sessions                    create (or rebuild with seed_profile + history)
+  POST /api/sessions/{id}/text          text turn (?tts=1 adds an MP3 of the reply)
+  POST /api/sessions/{id}/audio         voice-lite turn: WAV in, transcript + reply + MP3 out
+  POST /api/sessions/{id}/live-token    1-use ephemeral token for Gemini Live
+  POST /api/sessions/{id}/tools         execute Live tool calls
+  POST /api/sessions/{id}/transcript    store Live-mode transcript turns
+  GET  /api/sessions/{id}/visa-info     VisaInfo for the current corridor
 """
 
-import asyncio
 import base64
-import json
+import io
 import logging
 import time
 import uuid
+import wave
+from typing import Literal, Optional
 
-from fastapi import (
-    APIRouter, BackgroundTasks, WebSocket, WebSocketDisconnect,
-    HTTPException, Request, UploadFile, File,
-)
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from app.agent.conversation import ConversationManager
-from app.agent.voice import transcribe_audio, synthesize_speech_sentences
-from app.api.websocket_manager import manager
+from app.agent.conversation import ConversationManager, TurnOutcome
+from app.agent.live_session import mint_live_token
+from app.agent.prompts import GREETING
+from app.agent.tool_executor import execute_tool_calls
+from app.agent.voice import DEFAULT_VOICE, synthesize_speech
 from app.core.rate_limit import limiter
 from app.core.session_store import session_store
-from app.tools.notifier import send_lead_alert
-from app.tools.visa_knowledge import get_visa_info
 from app.tools import (
     record_conversation_started,
-    record_profile_completed,
-    record_hot_lead,
     record_handoff,
+    record_hot_lead,
     record_latency,
+    record_live_token,
+    record_profile_completed,
 )
+from app.tools.notifier import send_handoff_alert, send_lead_alert
+from app.tools.visa_knowledge import get_visa_info
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Generous for a ~30s WebM/Opus recording (the frontend caps recording
-# length itself) while still rejecting anything wildly oversized before it
-# wastes a Groq STT call.
-MAX_AUDIO_BYTES = 8 * 1024 * 1024
+MAX_AUDIO_BYTES = 2 * 1024 * 1024      # 30 s of 16 kHz mono PCM16 is ~0.96 MB
+MAX_AUDIO_SECONDS = 30.5
+MAX_LIVE_TOKENS_PER_SESSION = 8
 
 
-def _fire_and_forget(coro) -> None:
-    """WebSocket handlers have no response-lifecycle hook for BackgroundTasks
-    to attach to, so non-critical work (notifications, analytics) there is
-    scheduled this way instead — same "don't block the turn on it" intent."""
-    asyncio.create_task(coro)
+# ─── Request bodies ─────────────────────────────────────────────────────────
+
+class HistoryTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str = Field(..., max_length=2000)
 
 
-async def _record_turn_side_effects(session_id: str, response, profile, background_tasks: BackgroundTasks) -> None:
-    """Analytics + notification bookkeeping shared by the text/audio routes
-    and the WS handler — never on the critical path (item 14)."""
-    if response.lead_alert_triggered:
-        background_tasks.add_task(send_lead_alert, profile)
-        background_tasks.add_task(record_hot_lead, session_id, profile.lead_score)
-    if response.handoff:
-        background_tasks.add_task(record_handoff, session_id)
-    if response.profile_just_completed:
-        background_tasks.add_task(record_profile_completed, session_id)
-    if response.latency_ms is not None:
-        background_tasks.add_task(record_latency, "llm_turn", response.latency_ms)
+class CreateSessionBody(BaseModel):
+    seed_profile: Optional[dict] = None
+    history: Optional[list[HistoryTurn]] = Field(default=None, max_length=50)
 
 
-# ─── Session management ─────────────────────────────────────────────────────
-
-@router.post("/api/sessions")
-@limiter.limit("60/minute")
-async def create_session(request: Request, background_tasks: BackgroundTasks):
-    session_id = str(uuid.uuid4())
-    await session_store.create(session_id)
-    background_tasks.add_task(record_conversation_started, session_id)
-    return {"session_id": session_id}
+class TextMessage(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
 
 
-@router.get("/api/sessions/{session_id}/profile")
-@limiter.limit("60/minute")
-async def get_profile(request: Request, session_id: str):
+class LiveTokenBody(BaseModel):
+    resume_handle: Optional[str] = Field(default=None, max_length=4096)
+
+
+class ToolCall(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=200)
+    name: str = Field(..., max_length=100)
+    args: dict = Field(default_factory=dict)
+
+
+class ToolCallsBody(BaseModel):
+    calls: list[ToolCall] = Field(..., max_length=8)
+
+
+class TranscriptBody(BaseModel):
+    turns: list[HistoryTurn] = Field(..., max_length=50)
+
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
+
+async def _get_conv(session_id: str) -> ConversationManager:
     conv = await session_store.get(session_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return conv.profile.model_dump()
+    return conv
+
+
+async def _visa_for(conv: ConversationManager) -> Optional[dict]:
+    p = conv.profile
+    if not (p.passport and p.destination) or p.pending_clarification:
+        return None
+    return await get_visa_info(p.passport, p.destination)
+
+
+async def _turn_payload(
+    conv: ConversationManager, outcome: TurnOutcome, background_tasks: BackgroundTasks,
+) -> dict:
+    """The common `Turn` body, plus side effects (alerts, analytics) queued
+    to run after the response is sent."""
+    sid = conv.session_id
+    card = None
+    if outcome.handoff:
+        card = await conv.get_handoff_card(outcome.handoff_reason)
+        background_tasks.add_task(send_handoff_alert, conv.profile.model_copy(), card)
+        background_tasks.add_task(record_handoff, sid)
+    if outcome.lead_alert:
+        background_tasks.add_task(send_lead_alert, conv.profile.model_copy())
+        background_tasks.add_task(record_hot_lead, sid, conv.profile.lead_score)
+    if outcome.profile_just_completed:
+        background_tasks.add_task(record_profile_completed, sid)
+    return {
+        "profile": conv.profile.model_dump(mode="json"),
+        "events": [e.model_dump(mode="json") for e in outcome.events],
+        "handoff": outcome.handoff,
+        "handoff_card": card.model_dump(mode="json") if card else None,
+        "visa": await _visa_for(conv),
+    }
+
+
+async def _tts_b64(text: str, language: Optional[str], background_tasks: BackgroundTasks) -> Optional[str]:
+    start = time.perf_counter()
+    try:
+        audio = await synthesize_speech(text, language)
+    except Exception:
+        if not language or language.lower().startswith("en"):
+            logger.warning("TTS failed", exc_info=True)
+            return None
+        try:  # a language-specific voice failed: English voice beats silence
+            audio = await synthesize_speech(text, None)
+        except Exception:
+            logger.warning("TTS failed (fallback voice %s)", DEFAULT_VOICE, exc_info=True)
+            return None
+    background_tasks.add_task(record_latency, "tts", (time.perf_counter() - start) * 1000)
+    return base64.b64encode(audio).decode("ascii") if audio else None
+
+
+def _validate_wav(data: bytes) -> None:
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            frames, rate, channels = w.getnframes(), w.getframerate(), w.getnchannels()
+    except (wave.Error, EOFError):
+        raise HTTPException(status_code=415, detail="Expected a WAV file (16 kHz mono PCM16)")
+    if rate <= 0 or channels <= 0:
+        raise HTTPException(status_code=415, detail="Invalid WAV header")
+    if frames / rate > MAX_AUDIO_SECONDS:
+        raise HTTPException(status_code=413, detail="Audio longer than 30 seconds")
+    if frames == 0:
+        raise HTTPException(status_code=400, detail="Empty audio")
+
+
+# ─── Sessions ───────────────────────────────────────────────────────────────
+
+@router.post("/api/sessions")
+@limiter.limit("30/minute")
+async def create_session(
+    request: Request, background_tasks: BackgroundTasks, body: Optional[CreateSessionBody] = None,
+):
+    session_id = str(uuid.uuid4())
+    conv = await session_store.create(session_id)
+    history = [t.model_dump() for t in (body.history or [])] if body else []
+    seed = body.seed_profile if body else None
+    if seed or history:
+        conv.seed(seed, history)
+    if not conv.history:
+        conv.add_transcript([{"role": "assistant", "text": GREETING}])
+        background_tasks.add_task(record_conversation_started, session_id)
+    await session_store.save(conv)
+    return {"session_id": session_id, "greeting": GREETING, "profile": conv.profile.model_dump(mode="json")}
 
 
 @router.get("/api/sessions/{session_id}/visa-info")
 @limiter.limit("60/minute")
 async def get_visa_info_route(request: Request, session_id: str):
-    conv = await session_store.get(session_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    profile = conv.profile
-    if not profile.destination or not profile.passport:
-        return {"available": False}
-    return {"available": True, **(await get_visa_info(profile.passport, profile.destination))}
+    conv = await _get_conv(session_id)
+    visa = await _visa_for(conv)
+    return visa if visa is not None else {"available": False}
 
 
-@router.get("/api/sessions/{session_id}/events")
-@limiter.limit("60/minute")
-async def get_events(request: Request, session_id: str):
-    conv = await session_store.get(session_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return [e.model_dump() for e in conv.events]
-
-
-# ─── Text message ────────────────────────────────────────────────────────────
-
-class TextMessage(BaseModel):
-    message: str = Field(..., max_length=2000)
-
+# ─── Text turn ──────────────────────────────────────────────────────────────
 
 @router.post("/api/sessions/{session_id}/text")
 @limiter.limit("20/minute")
-async def send_text(request: Request, session_id: str, body: TextMessage, background_tasks: BackgroundTasks):
-    conv = await session_store.get(session_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    response = await conv.process_message(body.message)
-    await session_store.save(session_id, conv)
-
-    # Push updates over WebSocket if connected
-    await manager.send_transcript(session_id, "user", body.message)
-    await manager.send_transcript(session_id, "assistant", response.text)
-
-    if response.profile_updates:
-        await manager.send_profile_update(session_id, conv.profile.model_dump())
-
-    for event in response.events:
-        await manager.send_decision_event(session_id, event.model_dump())
-
-    if response.handoff:
-        handoff_card = await conv.get_handoff_card()
-        await manager.send_handoff(session_id, handoff_card.model_dump())
-
-    await _record_turn_side_effects(session_id, response, conv.profile, background_tasks)
-
-    return {
-        "reply": response.text,
-        "profile": conv.profile.model_dump(),
-        "events": [e.model_dump() for e in response.events],
-        "handoff": response.handoff,
-        "lead_alert_triggered": response.lead_alert_triggered,
-    }
+async def send_text(
+    request: Request,
+    session_id: str,
+    body: TextMessage,
+    background_tasks: BackgroundTasks,
+    tts: int = Query(default=0, ge=0, le=1),
+):
+    conv = await _get_conv(session_id)
+    async with conv.lock:
+        turn = await conv.process_message(body.message)
+        payload = await _turn_payload(conv, turn.outcome, background_tasks)
+        await session_store.save(conv)
+    background_tasks.add_task(record_latency, "llm_turn", turn.latency_ms)
+    payload["reply"] = turn.reply
+    if tts:
+        payload["audio_b64"] = await _tts_b64(turn.reply, turn.reply_language, background_tasks)
+    return payload
 
 
-# ─── Audio message ───────────────────────────────────────────────────────────
+# ─── Voice-lite turn ────────────────────────────────────────────────────────
 
 @router.post("/api/sessions/{session_id}/audio")
 @limiter.limit("20/minute")
@@ -156,181 +214,66 @@ async def send_audio(
     request: Request,
     session_id: str,
     background_tasks: BackgroundTasks,
-    audio: UploadFile = File(...),
+    file: UploadFile = File(...),
 ):
-    conv = await session_store.get(session_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    if not audio.content_type or not audio.content_type.startswith("audio/"):
-        raise HTTPException(status_code=415, detail="Expected an audio/* upload")
-
-    chunks = bytearray()
-    while True:
-        chunk = await audio.read(1024 * 1024)
-        if not chunk:
-            break
-        chunks.extend(chunk)
-        if len(chunks) > MAX_AUDIO_BYTES:
+    conv = await _get_conv(session_id)
+    data = bytearray()
+    while chunk := await file.read(256 * 1024):
+        data.extend(chunk)
+        if len(data) > MAX_AUDIO_BYTES:
             raise HTTPException(status_code=413, detail="Audio upload too large")
-    audio_bytes = bytes(chunks)
+    _validate_wav(bytes(data))
 
-    await manager.send_status(session_id, "thinking")
-
-    # Step 1: Transcribe
-    stt_start = time.perf_counter()
-    try:
-        filename = audio.filename or "audio.webm"
-        transcript = await transcribe_audio(audio_bytes, filename)
-    except Exception as e:
-        logger.exception("Transcription failed for session %s", session_id)
-        await manager.send_error(session_id, f"Transcription failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
-    background_tasks.add_task(record_latency, "stt", (time.perf_counter() - stt_start) * 1000)
-
-    if not transcript:
-        await manager.send_status(session_id, "idle")
-        return {"transcript": "", "reply": "", "audio": None}
-
-    # Push transcript to dashboard
-    await manager.send_transcript(session_id, "user", transcript)
-
-    # Step 2: Process with agent
-    response = await conv.process_message(transcript)
-    await session_store.save(session_id, conv)
-
-    # Push agent transcript
-    await manager.send_transcript(session_id, "assistant", response.text)
-
-    # Push profile updates
-    if response.profile_updates:
-        await manager.send_profile_update(session_id, conv.profile.model_dump())
-
-    # Push decision events
-    for event in response.events:
-        await manager.send_decision_event(session_id, event.model_dump())
-
-    # Push handoff if needed
-    if response.handoff:
-        handoff_card = await conv.get_handoff_card()
-        await manager.send_handoff(session_id, handoff_card.model_dump())
-
-    await _record_turn_side_effects(session_id, response, conv.profile, background_tasks)
-
-    # Step 3: Synthesize speech — sentence-by-sentence over the WebSocket
-    # (item 8) so playback can start on the first sentence instead of
-    # waiting for the whole reply to finish synthesizing. Also still return
-    # one full clip in the REST body below for callers not on the socket.
-    await manager.send_status(session_id, "speaking")
-    tts_start = time.perf_counter()
-    first_chunk_b64 = None
-    try:
-        async for chunk in synthesize_speech_sentences(response.text):
-            chunk_b64 = base64.b64encode(chunk).decode("utf-8")
-            if first_chunk_b64 is None:
-                first_chunk_b64 = chunk_b64
-            else:
-                await manager.send_audio(session_id, chunk_b64)
-    except Exception:
-        logger.exception("TTS synthesis failed for session %s", session_id)
-    background_tasks.add_task(record_latency, "tts", (time.perf_counter() - tts_start) * 1000)
-
-    await manager.send_status(session_id, "idle")
-
-    return {
-        "transcript": transcript,
-        "reply": response.text,
-        "audio": first_chunk_b64,
-        "profile": conv.profile.model_dump(),
-        "handoff": response.handoff,
-        "lead_alert_triggered": response.lead_alert_triggered,
-    }
+    async with conv.lock:
+        turn = await conv.process_audio(bytes(data))
+        payload = await _turn_payload(conv, turn.outcome, background_tasks)
+        await session_store.save(conv)
+    background_tasks.add_task(record_latency, "audio_turn", turn.latency_ms)
+    payload["user_transcript"] = turn.user_transcript or ""
+    payload["reply"] = turn.reply
+    payload["audio_b64"] = await _tts_b64(turn.reply, turn.reply_language, background_tasks)
+    return payload
 
 
-# ─── WebSocket ───────────────────────────────────────────────────────────────
+# ─── Gemini Live ────────────────────────────────────────────────────────────
 
-@router.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    await manager.connect(session_id, websocket)
-
-    conv = await session_store.get(session_id)
-    if conv is None:
-        conv = await session_store.create(session_id)
-
-    # Send initial greeting — spoken, not just text, since this is a
-    # voice-first flow and a silent transcript-only greeting means the user
-    # never actually hears Aria ask for their name before they start talking.
-    # Gated on empty history (not "session missing") because the frontend
-    # always creates the session via POST /api/sessions before opening the
-    # socket, so by the time we get here the session already exists —
-    # history is what actually distinguishes a fresh session from a
-    # reconnect, and a reconnect must NOT replay the greeting audio over
-    # whatever the user is mid-conversation doing.
-    if not conv.history:
-        greeting = "Hi there! I'm Aria, your travel concierge. What's your name?"
-        from app.models.schemas import ConversationMessage
-        conv.history.append(ConversationMessage(role="assistant", content=greeting))
-        await session_store.save(session_id, conv)
-        await manager.send_transcript(session_id, "assistant", greeting)
-        await manager.send_status(session_id, "speaking")
+@router.post("/api/sessions/{session_id}/live-token")
+@limiter.limit("6/minute")
+async def live_token(
+    request: Request, session_id: str, background_tasks: BackgroundTasks, body: Optional[LiveTokenBody] = None,
+):
+    conv = await _get_conv(session_id)
+    async with conv.lock:
+        if conv.live_tokens_issued >= MAX_LIVE_TOKENS_PER_SESSION:
+            raise HTTPException(status_code=429, detail="busy")
         try:
-            async for chunk in synthesize_speech_sentences(greeting):
-                await manager.send_audio(session_id, base64.b64encode(chunk).decode("utf-8"))
-        except Exception:
-            logger.exception("Greeting TTS failed for session %s", session_id)
+            result = await mint_live_token(conv, body.resume_handle if body else None)
+        except Exception as exc:
+            logger.warning("Live token minting failed for session %s: %s", session_id, type(exc).__name__)
+            raise HTTPException(status_code=502, detail="Could not start a live session")
+        conv.live_tokens_issued += 1
+        await session_store.save(conv)
+    background_tasks.add_task(record_live_token, session_id)
+    return result
 
-    await manager.send_status(session_id, "idle")
 
-    try:
-        while True:
-            data = await websocket.receive_text()
-            msg = json.loads(data)
-            msg_type = msg.get("type")
+@router.post("/api/sessions/{session_id}/tools")
+@limiter.limit("120/minute")
+async def run_tools(request: Request, session_id: str, body: ToolCallsBody, background_tasks: BackgroundTasks):
+    conv = await _get_conv(session_id)
+    async with conv.lock:
+        outcome, function_responses = await execute_tool_calls(conv, [c.model_dump() for c in body.calls])
+        payload = await _turn_payload(conv, outcome, background_tasks)
+        await session_store.save(conv)
+    payload["function_responses"] = function_responses
+    return payload
 
-            if msg_type == "text":
-                user_text = msg.get("text", "").strip()
-                if not user_text:
-                    continue
 
-                await manager.send_status(session_id, "thinking")
-                response = await conv.process_message(user_text)
-                await session_store.save(session_id, conv)
-                await manager.send_transcript(session_id, "user", user_text)
-                await manager.send_transcript(session_id, "assistant", response.text)
-
-                if response.profile_updates:
-                    await manager.send_profile_update(session_id, conv.profile.model_dump())
-
-                for event in response.events:
-                    await manager.send_decision_event(session_id, event.model_dump())
-
-                if response.handoff:
-                    handoff_card = await conv.get_handoff_card()
-                    await manager.send_handoff(session_id, handoff_card.model_dump())
-
-                if response.lead_alert_triggered:
-                    _fire_and_forget(send_lead_alert(conv.profile))
-                    _fire_and_forget(record_hot_lead(session_id, conv.profile.lead_score))
-                if response.handoff:
-                    _fire_and_forget(record_handoff(session_id))
-                if response.profile_just_completed:
-                    _fire_and_forget(record_profile_completed(session_id))
-                if response.latency_ms is not None:
-                    _fire_and_forget(record_latency("llm_turn", response.latency_ms))
-
-                # TTS — sentence-by-sentence, same streaming behavior as
-                # the /audio route.
-                await manager.send_status(session_id, "speaking")
-                try:
-                    async for chunk in synthesize_speech_sentences(response.text):
-                        await manager.send_audio(session_id, base64.b64encode(chunk).decode("utf-8"))
-                except Exception:
-                    logger.exception("TTS synthesis failed for session %s", session_id)
-
-                await manager.send_status(session_id, "idle")
-
-            elif msg_type == "ping":
-                await manager.send(session_id, "pong", {})
-
-    except WebSocketDisconnect:
-        manager.disconnect(session_id)
+@router.post("/api/sessions/{session_id}/transcript")
+@limiter.limit("60/minute")
+async def add_transcript(request: Request, session_id: str, body: TranscriptBody):
+    conv = await _get_conv(session_id)
+    async with conv.lock:
+        conv.add_transcript([t.model_dump() for t in body.turns])
+        await session_store.save(conv)
+    return {"ok": True}

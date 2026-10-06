@@ -1,33 +1,36 @@
 """
-Visa/budget lookups. Backed by the structured knowledge base in
-app/tools/knowledge_base.py (app/data/visa_knowledge.json) rather than the
-tiny hardcoded dicts this module used to define directly.
+Visa lookups backed by the structured knowledge base (tools/knowledge_base.py).
 
-Results are cached in Redis for 24h (`@cached`) — visa rules and geocoded
-destination resolutions don't change intra-day, and this also keeps repeat
-queries from re-hitting Nominatim's free geocoding service unnecessarily.
+Two views of the same record:
+- get_visa_info(): the `VisaInfo` shape the dashboard renders.
+- model_visa_payload(): what the model sees (lookup_visa tool result in Live,
+  the VISA DATA note in text mode), including whether it is unverified.
 """
 
-from app.core.redis_client import cached
-from app.tools.knowledge_base import lookup as kb_lookup
+from typing import Optional
+
+from app.tools.knowledge_base import is_stale, lookup as kb_lookup
+
+_MODEL_FIELDS = (
+    "visa_required", "visa_type", "processing_time", "fee",
+    "validity", "notes", "documents", "source", "last_verified",
+)
 
 
-@cached(ttl=86400, prefix="visa")
 async def get_visa_info(passport: str, destination: str) -> dict:
-    passport = passport.strip().lower()
-    destination = destination.strip().lower()
-
     record = await kb_lookup(passport, destination)
     if record is None:
         return {
+            "available": False,
             "visa_required": None,
+            "verified": False,
             "notes": (
-                f"Visa information for {passport} passport to {destination} "
-                "not available. Please check the official embassy website."
+                f"No verified visa data for a {passport} passport to {destination} yet. "
+                "A visa specialist can confirm the requirements."
             ),
         }
-
     return {
+        "available": True,
         "visa_required": record["visa_required"],
         "visa_type": record.get("visa_type"),
         "processing_time": record.get("processing_time"),
@@ -37,34 +40,15 @@ async def get_visa_info(passport: str, destination: str) -> dict:
         "documents": record.get("documents", []),
         "source": record.get("source"),
         "last_verified": record.get("last_verified"),
+        "verified": not is_stale(record),
     }
 
 
-@cached(ttl=86400, prefix="budget")
-async def estimate_budget(destination: str, travelers: int, days: int) -> dict:
-    destination = destination.strip().lower()
-
-    # Budget data is currently only modeled for Indian-passport corridors,
-    # matching the app's existing India-centric scope.
-    record = await kb_lookup("india", destination)
+def model_visa_payload(record: Optional[dict]) -> dict:
+    """Trimmed record for the model; `verified` false means older than 6 months."""
     if record is None:
-        return {"error": f"Budget estimate not available for {destination}"}
-
-    per_person = record["budget_per_person_per_day_inr"] * days
-    total_stay = per_person * travelers
-    flights = record["flight_from_india_inr"] * travelers
-    visas = record["visa_fee_inr"] * travelers
-    total = total_stay + flights + visas
-
-    return {
-        "destination": destination,
-        "travelers": travelers,
-        "days": days,
-        "stay_cost_inr": total_stay,
-        "flights_inr": flights,
-        "visa_fees_inr": visas,
-        "total_estimated_inr": total,
-        "total_estimated_formatted": f"₹{total:,}",
-        "currency": record["currency"],
-        "note": "Estimates are approximate. Actual costs may vary.",
-    }
+        return {"found": False}
+    payload = {"found": True}
+    payload.update({k: record.get(k) for k in _MODEL_FIELDS if record.get(k) is not None})
+    payload["verified"] = not is_stale(record)
+    return payload

@@ -1,16 +1,13 @@
 """
-Small, dependency-free retry helper for the handful of external calls
-(Groq LLM, Groq Whisper, edge_tts) that currently have no retry/timeout
-logic at all and rely purely on SDK defaults plus a blanket except-and-
-fallback. One retry after a short delay is enough for the transient
-blips (a dropped connection, a momentary rate-limit) this is meant to
-absorb — anything failing twice in a row is a real outage the existing
-graceful-fallback text should handle instead.
+Small retry helper for external calls (Gemini, edge-tts). One retry after a
+short delay absorbs transient blips (a dropped connection, a 5xx); anything
+failing twice in a row is a real outage the caller's graceful fallback
+handles instead.
 """
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, TypeVar
+from typing import Awaitable, Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -24,24 +21,20 @@ async def with_retries(
     base_delay_s: float = 0.4,
     timeout_s: float = 8.0,
     label: str = "call",
-    no_retry_on: tuple[type[Exception], ...] = (),
+    give_up_on: Optional[Callable[[BaseException], bool]] = None,
 ) -> T:
-    """`no_retry_on` is for errors a retry can't possibly fix — e.g. Groq's
-    RateLimitError, which reports a wait time measured in minutes, so
-    retrying half a second later just adds latency before the same
-    graceful-fallback outcome. Fails fast on those instead."""
+    """`give_up_on(exc)` returning True re-raises immediately: for errors a
+    retry can't fix, like a 429 quota error whose window is a minute or a day."""
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
             return await asyncio.wait_for(coro_fn(), timeout=timeout_s)
-        except no_retry_on as exc:
-            logger.warning("%s hit a non-retryable error: %s", label, exc)
-            raise
         except Exception as exc:
+            if give_up_on is not None and give_up_on(exc):
+                logger.warning("%s hit a non-retryable error: %s", label, type(exc).__name__)
+                raise
             last_exc = exc
-            logger.warning(
-                "%s failed on attempt %d/%d: %s", label, attempt, attempts, exc,
-            )
+            logger.warning("%s failed on attempt %d/%d: %s", label, attempt, attempts, exc)
             if attempt < attempts:
                 await asyncio.sleep(base_delay_s * attempt)
     assert last_exc is not None

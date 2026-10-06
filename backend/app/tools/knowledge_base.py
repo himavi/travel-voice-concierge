@@ -1,30 +1,45 @@
 """
-Structured visa knowledge base — loads app/data/visa_knowledge.json once
-and provides exact + alias + fuzzy retrieval over it.
+Structured visa knowledge base: loads app/data/visa_knowledge.json once and
+resolves (passport, destination) pairs with exact and alias matching only.
 
-NOTE: the records in visa_knowledge.json are curated example content
-(source URLs + last_verified dates included per record), not scraped from
-a live feed — nothing in this free-tier stack can auto-verify current
-embassy/government data. Keeping them accurate over time is a manual task.
+There is deliberately no fuzzy string matching: WRatio-style scoring mapped
+"Ukraine" onto the UK record, i.e. it confidently answered a different
+country's visa rules. A miss here is safe (the assistant says it has no
+verified data and offers a specialist); a wrong hit is not.
 
-No embeddings/vector search — this is small structured data (a handful of
-passport/destination corridors), not unstructured documents, so exact-match
-plus a lightweight fuzzy fallback (rapidfuzz) is the right amount of
-"retrieval" here rather than standing up a vector DB for it.
+Resolution order for the destination:
+  1. a record's destination_key or one of its aliases (case-insensitive);
+  2. Schengen member countries fall back to the passport's "schengen" record;
+  3. the geocoder (tools/geo.py), which normalizes cities and alternate
+     country names ("Paris" -> france), then steps 1-2 again on its answer.
+
+Records carry a `last_verified` date. Anything older than STALE_AFTER_DAYS
+is reported as unverified, so the assistant tells the user the details may
+have changed and offers a specialist instead of presenting them as current.
+The records are curated by hand; nothing here can auto-verify embassy data.
 """
 
 import json
 import logging
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
-
-from rapidfuzz import process, fuzz
 
 from app.tools.geo import SCHENGEN_COUNTRIES, resolve_destination_key
 
 logger = logging.getLogger(__name__)
 
 _DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "visa_knowledge.json"
+
+STALE_AFTER_DAYS = 183  # ~6 months
+
+# Common ways people name a passport/nationality -> the passport key used in
+# the records.
+_PASSPORT_ALIASES = {
+    "indian": "india",
+    "india": "india",
+    "bharat": "india",
+}
 
 with open(_DATA_PATH, "r", encoding="utf-8") as f:
     _RECORDS: list[dict] = json.load(f)
@@ -34,47 +49,62 @@ _BY_KEY: dict[tuple[str, str], dict] = {
     (r["passport"], r["destination_key"]): r for r in _RECORDS
 }
 
-# alias string -> (passport, destination_key), for fuzzy matching
-_ALIAS_INDEX: dict[str, tuple[str, str]] = {}
-for r in _RECORDS:
-    for alias in r.get("aliases", [r["destination_key"]]):
-        _ALIAS_INDEX[alias.lower()] = (r["passport"], r["destination_key"])
+# (passport, alias) -> destination_key
+_ALIAS_INDEX: dict[tuple[str, str], str] = {}
+for _r in _RECORDS:
+    for _alias in [_r["destination_key"], *_r.get("aliases", [])]:
+        _ALIAS_INDEX[(_r["passport"], _alias.strip().lower())] = _r["destination_key"]
 
-_ALL_ALIASES = list(_ALIAS_INDEX.keys())
+
+def _norm(text: str) -> str:
+    text = " ".join(text.strip().lower().replace(".", "").split())
+    if text.startswith("the "):
+        text = text[4:]
+    return text
+
+
+def normalize_passport(passport: str) -> str:
+    p = _norm(passport)
+    for suffix in (" passport", " passports", " citizen", " citizens", " national", " nationals"):
+        if p.endswith(suffix):
+            p = p[: -len(suffix)]
+    return _PASSPORT_ALIASES.get(p, p)
 
 
 def _lookup_exact(passport: str, destination: str) -> Optional[dict]:
-    record = _BY_KEY.get((passport, destination))
-    if record is not None:
-        return record
-    if passport == "india" and destination in SCHENGEN_COUNTRIES:
-        return _BY_KEY.get(("india", "schengen"))
+    key = _ALIAS_INDEX.get((passport, destination))
+    if key is not None:
+        return _BY_KEY.get((passport, key))
+    if destination in SCHENGEN_COUNTRIES:
+        return _BY_KEY.get((passport, "schengen"))
     return None
 
 
-async def lookup(passport: str, destination: str) -> Optional[dict]:
-    """Resolves a (passport, destination) pair to a knowledge-base record.
-    Tries, in order: exact key match -> geocoded/alias resolution -> fuzzy
-    string match on known aliases (catches typos). Returns None if nothing
-    reasonably matches — callers must not fabricate an answer in that case."""
-    passport = passport.strip().lower()
-    destination = destination.strip().lower()
+def is_stale(record: dict, today: Optional[date] = None) -> bool:
+    raw = record.get("last_verified")
+    if not raw:
+        return True
+    try:
+        verified_on = datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return True
+    today = today or datetime.now(timezone.utc).date()
+    return (today - verified_on).days > STALE_AFTER_DAYS
 
-    record = _lookup_exact(passport, destination)
+
+async def lookup(passport: str, destination: str) -> Optional[dict]:
+    """Returns the knowledge-base record for this corridor, or None.
+    Callers must not fabricate an answer when this returns None."""
+    if not passport or not destination:
+        return None
+    passport_key = normalize_passport(passport)
+    dest = _norm(destination)
+
+    record = _lookup_exact(passport_key, dest)
     if record is not None:
         return record
 
-    resolved = await resolve_destination_key(destination)
-    if resolved:
-        record = _lookup_exact(passport, resolved)
-        if record is not None:
-            return record
-
-    match = process.extractOne(destination, _ALL_ALIASES, scorer=fuzz.WRatio, score_cutoff=80)
-    if match:
-        alias, _score, _idx = match
-        fuzzy_passport, fuzzy_key = _ALIAS_INDEX[alias]
-        if fuzzy_passport == passport:
-            return _BY_KEY.get((fuzzy_passport, fuzzy_key))
-
+    resolved = await resolve_destination_key(dest)
+    if resolved and resolved != dest:
+        return _lookup_exact(passport_key, resolved)
     return None

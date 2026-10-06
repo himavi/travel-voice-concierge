@@ -1,18 +1,21 @@
 from app.models.schemas import CustomerProfile
 
 
+# Weights sum to 100. The six core fields (destination, passport, purpose,
+# month, travelers, visa need) add up to exactly LEAD_ALERT_THRESHOLD, so a
+# fully-qualified trip is a hot lead even if the customer never gives a name.
 SCORING_WEIGHTS = {
     "destination": 15,
     "passport": 15,
+    "purpose": 10,
     "travel_month": 10,
-    "travel_dates": 10,
-    "travelers": 8,
-    "purpose": 8,
+    "travelers": 10,
     "visa_required": 10,
+    "travel_dates": 5,
     "first_schengen": 5,
     "budget": 5,
-    "customer_name": 10,  # bumped from 4 — now a required opening question, not an opportunistic extra
-    "handoff_requested": 10,  # high intent signal
+    "customer_name": 5,
+    "handoff_requested": 10,
 }
 
 LEAD_ALERT_THRESHOLD = 70  # score at which a hot-lead push notification fires
@@ -20,19 +23,19 @@ LEAD_ALERT_THRESHOLD = 70  # score at which a hot-lead push notification fires
 
 def calculate_lead_score(profile: CustomerProfile) -> int:
     score = 0
-
     if profile.destination:
         score += SCORING_WEIGHTS["destination"]
     if profile.passport:
         score += SCORING_WEIGHTS["passport"]
-    if profile.travel_month:
+    if profile.purpose:
+        score += SCORING_WEIGHTS["purpose"]
+    # Month or exact dates both answer "when"; exact dates add a small bonus.
+    if profile.travel_month or profile.travel_dates:
         score += SCORING_WEIGHTS["travel_month"]
     if profile.travel_dates:
         score += SCORING_WEIGHTS["travel_dates"]
     if profile.travelers:
         score += SCORING_WEIGHTS["travelers"]
-    if profile.purpose:
-        score += SCORING_WEIGHTS["purpose"]
     if profile.visa_required is not None:
         score += SCORING_WEIGHTS["visa_required"]
     if profile.first_schengen is not None:
@@ -43,47 +46,41 @@ def calculate_lead_score(profile: CustomerProfile) -> int:
         score += SCORING_WEIGHTS["customer_name"]
     if profile.handoff_requested:
         score += SCORING_WEIGHTS["handoff_requested"]
-
     return min(score, 100)
 
 
-def get_missing_fields(profile: CustomerProfile) -> list[str]:
+def get_missing_fields(profile: CustomerProfile, *, visa_checked: bool = False) -> list[str]:
+    """Core fields still unknown, in priority order. The name is optional and
+    never counts as missing."""
     missing = []
-    if not profile.customer_name:
-        missing.append("name")
     if not profile.destination:
         missing.append("destination")
     if not profile.passport:
         missing.append("passport")
-    if not profile.travel_month and not profile.travel_dates:
-        missing.append("travel dates or month")
-    if not profile.travelers:
-        missing.append("number of travelers")
     if not profile.purpose:
         missing.append("purpose of travel")
-    if profile.visa_required is None:
+    if not profile.travel_month and not profile.travel_dates:
+        missing.append("travel month or dates")
+    if not profile.travelers:
+        missing.append("number of travelers")
+    if profile.visa_required is None and not visa_checked:
         missing.append("visa requirement")
     return missing
 
 
-def get_next_priority_field(profile: CustomerProfile) -> str:
-    """Returns the single most important missing field to ask about next."""
-    if not profile.customer_name:
-        return "their name"
-    if not profile.destination:
-        return "destination"
-    if not profile.passport:
-        return "passport country"
-    if not profile.purpose:
-        return "purpose of travel"
-    if not profile.travel_month and not profile.travel_dates:
-        return "travel month or dates"
-    if not profile.travelers:
-        return "number of travelers"
-    if profile.visa_required is None:
-        return "whether they need a visa"
-    if not profile.travel_dates:
-        return "exact travel dates"
-    if not profile.budget:
-        return "approximate budget"
-    return "any additional requirements"
+def get_next_priority_field(
+    profile: CustomerProfile, *, name_asked: bool = False, visa_checked: bool = False,
+) -> str:
+    """The single most useful thing to learn next. Visa need is something
+    Aria checks herself (lookup), not a question for the customer. The name
+    comes last, only once, and only after destination + passport."""
+    missing = get_missing_fields(profile, visa_checked=visa_checked)
+    if missing:
+        return missing[0]
+    if not profile.customer_name and not name_asked:
+        return "their name (optional, ask once)"
+    return "nothing required; answer their questions and offer next steps"
+
+
+def may_ask_name(profile: CustomerProfile, *, name_asked: bool) -> bool:
+    return bool(profile.destination and profile.passport and not profile.customer_name and not name_asked)

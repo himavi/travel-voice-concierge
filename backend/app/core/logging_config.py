@@ -1,7 +1,6 @@
 """
-Structured (one-JSON-line-per-record) logging. Render's free tier captures
-stdout/stderr in its own log viewer at no cost, so this is all that's
-needed — no paid log-aggregation service.
+Structured (one-JSON-line-per-record) logging to stdout, which the host
+(Hugging Face Spaces) shows in its log viewer. No log service needed.
 """
 
 import json

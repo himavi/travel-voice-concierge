@@ -55,3 +55,4 @@ logs/
 *.wav
 *.mp3
 temp_audio/
+.vercel

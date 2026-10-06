@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+// Rendered outside the root layout, so it can't rely on globals.css.
 export default function GlobalError({
   error,
   reset,
@@ -15,25 +16,17 @@ export default function GlobalError({
 
   return (
     <html lang="en">
-      <body>
-        <div
-          className="min-h-[100dvh] flex flex-col items-center justify-center px-6 text-center"
-          style={{ background: "#15110D" }}
-        >
-          <h1 className="text-lg font-semibold mb-2" style={{ color: "#F5F1EA" }}>
-            Something went wrong
-          </h1>
-          <p className="text-sm max-w-xs mb-6" style={{ color: "#8F8878" }}>
-            The app failed to load. Please try again.
-          </p>
+      <body style={{ margin: 0, background: "#0B0C0E", color: "#F3F1EC", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <main style={{ minHeight: "100dvh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center" }}>
+          <h1 style={{ fontSize: 24, fontWeight: 600, margin: "0 0 8px" }}>Something went wrong</h1>
+          <p style={{ fontSize: 15, color: "#BDB9B1", margin: "0 0 24px", maxWidth: 320 }}>Aria failed to load. Please try again.</p>
           <button
             onClick={reset}
-            className="px-6 py-2.5 rounded-xl text-sm font-semibold text-white"
-            style={{ background: "linear-gradient(135deg, #FF6B4A, #F5A623)" }}
+            style={{ minHeight: 48, padding: "0 22px", borderRadius: 12, border: 0, background: "#E7B877", color: "#1B1509", fontSize: 15, fontWeight: 600, cursor: "pointer" }}
           >
             Try again
           </button>
-        </div>
+        </main>
       </body>
     </html>
   );

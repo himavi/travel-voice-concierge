@@ -1,70 +1,70 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { AlertTriangle, ChevronUp, Info, X } from "lucide-react";
+import clsx from "clsx";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { Header } from "@/components/layout/Header";
+import { Footer, Credit } from "@/components/layout/Footer";
+import { Landing, type Destination } from "@/components/landing/Landing";
 import { VoiceOrb } from "@/components/voice/VoiceOrb";
 import { VoiceStatus } from "@/components/voice/VoiceStatus";
 import { Conversation } from "@/components/voice/Conversation";
-import { TranscriptDrawer } from "@/components/voice/TranscriptDrawer";
-import { TravelProfile } from "@/components/dashboard/TravelProfile";
+import { Composer } from "@/components/voice/Composer";
 import { LeadScore } from "@/components/dashboard/LeadScore";
-import { DecisionTrace } from "@/components/dashboard/DecisionTrace";
+import { TravelProfile } from "@/components/dashboard/TravelProfile";
 import { VisaInsight } from "@/components/dashboard/VisaInsight";
-import { HandoffCard } from "@/components/dashboard/HandoffCard";
-import { ChevronUp, Mic, Map, Zap, Handshake, AlertTriangle, Globe2, MessageSquare } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import clsx from "clsx";
+import { DecisionTrace } from "@/components/dashboard/DecisionTrace";
+import { HandoffCard, HandoffSummary } from "@/components/dashboard/HandoffCard";
+import { useMediaQuery } from "@/components/ui/useMediaQuery";
 
-const DESTINATIONS = [
-  { flag: "🇫🇷", name: "France" },
-  { flag: "🇯🇵", name: "Japan" },
-  { flag: "🇮🇹", name: "Italy" },
-  { flag: "🇦🇪", name: "Dubai" },
-  { flag: "🇺🇸", name: "USA" },
-  { flag: "🇬🇧", name: "UK" },
-  { flag: "🇹🇭", name: "Thailand" },
-  { flag: "🇦🇺", name: "Australia" },
-];
-
-const intentLabel: Record<string, string> = {
-  visa_inquiry:  "Visa Inquiry",
-  trip_planning: "Trip Planning",
-  cost_inquiry:  "Cost Inquiry",
-  general_info:  "General Info",
-  human_handoff: "Human Handoff",
-};
-
-const FEATURES = [
-  { Icon: Mic, label: "Voice AI" },
-  { Icon: Map, label: "Visa info" },
-  { Icon: Zap, label: "Instant" },
-  { Icon: Handshake, label: "Handoff" },
-];
+/** Height of the collapsed mobile dashboard sheet (its peek bar). */
+const PEEK = 64;
 
 export default function Home() {
   const {
-    sessionId, status, transcript, profile, events, handoff, liveMode,
-    isConnected, error, start, toggleLiveMode, sendText, getInputLevel,
+    backend, retryHealth, mode, status, transcript, profile, events, handoff, visa, liveMode,
+    isConnected, connecting, error, notice, dismissNotice, start, toggleLiveMode, sendText, getInputLevel,
   } = useVoiceAgent();
+  const backendReady = backend === "ready";
 
-  const [started, setStarted]                     = useState(false);
-  const [leaving, setLeaving]                     = useState(false);
-  const [handoffDismissed, setHandoffDismissed]   = useState(false);
-  const [showTranscript, setShowTranscript]       = useState(false);
-  const [textInput, setTextInput]                 = useState("");
-  const [isStarting, setIsStarting]               = useState(false);
-  const [mobileInsightsOpen, setMobileInsightsOpen] = useState(false);
+  const [started, setStarted]                   = useState(false);
+  const [leaving, setLeaving]                   = useState(false);
+  const [handoffDismissed, setHandoffDismissed] = useState(false);
+  const [textInput, setTextInput]               = useState("");
+  const [isStarting, setIsStarting]             = useState(false);
+  const [sheetOpen, setSheetOpen]               = useState(false);
+  const [copied, setCopied]                     = useState(false);
+
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const isShort = useMediaQuery("(max-height: 700px)");
+  const sheetBodyRef = useRef<HTMLDivElement>(null);
+
+  const enterApp = () => {
+    // Let the landing play its exit before the app mounts, instead of hard-cutting.
+    setLeaving(true);
+    setTimeout(() => setStarted(true), 360);
+  };
 
   const handleStart = async (withVoice: boolean = true) => {
+    if (!backendReady) return;
     setIsStarting(true);
     const sid = await start(withVoice);
     setIsStarting(false);
     if (!sid) return;
-    // Let the landing screen play its exit animation before the app mounts,
-    // instead of hard-cutting between the two views.
-    setLeaving(true);
-    setTimeout(() => setStarted(true), 380);
+    enterApp();
+  };
+
+  /** Destination shortcut: a text session that opens with that trip. */
+  const handleDestination = async (d: Destination) => {
+    if (!backendReady) return;
+    setIsStarting(true);
+    const sid = await start(false);
+    setIsStarting(false);
+    if (!sid) return;
+    enterApp();
+    void sendText(`I'm planning a trip to ${"phrase" in d ? d.phrase : d.name}.`);
   };
 
   const handleSendText = () => {
@@ -73,455 +73,237 @@ export default function Home() {
     setTextInput("");
   };
 
-  const isVoiceActive = status === "listening" || status === "speaking";
-  const nextField = events.find(e => e.event_type === "QUESTION_GENERATED")?.field;
+  const handleCopy = async () => {
+    const text = transcript
+      .filter((m) => !m.partial)
+      .map((m) => `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.role === "user" ? "You" : "Aria"}: ${m.text}`)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // Clipboard API unavailable: nothing sensible to fall back to.
+    }
+  };
+
+  const dismissHandoff = useCallback(() => setHandoffDismissed(true), []);
+
+  // A new handoff always surfaces its brief.
+  useEffect(() => {
+    if (handoff) setHandoffDismissed(false);
+  }, [handoff]);
+
+  // Mobile sheet: Escape closes; a collapsed sheet is inert so keyboard and
+  // screen-reader users don't tab into off-screen content.
+  useEffect(() => {
+    if (!sheetOpen || isDesktop) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSheetOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sheetOpen, isDesktop]);
+
+  useEffect(() => {
+    const el = sheetBodyRef.current;
+    if (!el) return;
+    if (!isDesktop && !sheetOpen) el.setAttribute("inert", "");
+    else el.removeAttribute("inert");
+  }, [isDesktop, sheetOpen, started]);
+
+  const nextField = events.find((e) => e.event_type === "QUESTION_GENERATED")?.field;
+  const score = Math.max(0, Math.min(100, profile.lead_score));
 
   return (
-    <div className="app-bg flex flex-col relative min-h-[100dvh] lg:h-[100dvh] lg:overflow-hidden">
-
-      {/* ── Ambient warm glow ── */}
-      <div className="ambient-glow" aria-hidden="true" />
+    <div className={clsx("flex flex-col bg-bg", started ? "h-[100dvh] overflow-hidden" : "min-h-[100dvh]")}>
+      <a href="#main" className="skip-link">Skip to content</a>
 
       <Header
         started={started}
-        isConnected={isConnected}
-        showTranscript={showTranscript}
-        onToggleTranscript={() => setShowTranscript(v => !v)}
+        onNewSession={() => window.location.reload()}
+        onCopyTranscript={handleCopy}
+        canCopy={transcript.length > 0}
+        copied={copied}
       />
 
       {/* ── Error ── */}
       <AnimatePresence>
         {error && (
           <motion.div
-            initial={{ opacity: 0, y: -8, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: "auto" }}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.25 }}
-            className="relative z-10 mx-4 mt-3 px-4 py-2.5 rounded-xl text-sm border flex-shrink-0 overflow-hidden"
-            style={{ background: "rgba(240,82,90,0.1)", borderColor: "rgba(240,82,90,0.3)", color: "#F0838A" }}
-            role="alert">
-            <span className="inline-flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" aria-hidden="true" />
-              {error}
-            </span>
+            className="relative z-10 flex-shrink-0 overflow-hidden"
+          >
+            <div
+              role="alert"
+              className="mx-4 sm:mx-6 mt-3 flex items-start gap-2.5 rounded-xl border border-[rgba(240,138,126,0.35)] bg-[rgba(240,138,126,0.07)] px-4 py-3 text-sm text-danger"
+            >
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <span className="leading-snug">{error}</span>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ════════════════════════════════
-          LANDING
-      ════════════════════════════════ */}
+      {/* ── Non-blocking notice (e.g. Live → Lite fallback) ── */}
+      <AnimatePresence>
+        {notice && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.25 }}
+            className="fixed z-[45] top-[72px] inset-x-0 lg:right-[400px] xl:right-[420px] mx-auto w-[calc(100%-32px)] max-w-md flex items-start gap-3 rounded-xl border border-line-strong bg-bg-overlay pl-4 pr-1.5 py-1.5 shadow-[0_16px_48px_rgba(0,0,0,0.45)]"
+            role="status"
+            aria-live="polite"
+            data-testid="notice-toast"
+          >
+            <Info className="w-4 h-4 mt-[13px] flex-shrink-0 text-accent" aria-hidden="true" />
+            <span className="flex-1 py-2.5 text-sm leading-snug text-ink-2">{notice}</span>
+            <button onClick={dismissNotice} aria-label="Dismiss notice" className="icon-btn flex-shrink-0">
+              <X className="w-4 h-4" aria-hidden="true" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {!started && (
-        <div className={clsx(
-          "relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-12",
-          leaving && "landing-leave"
-        )}>
-
-          {/* Badge */}
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium mb-7 border"
-            style={{
-              background: "var(--surface)",
-              borderColor: "rgba(255,107,74,0.3)",
-              color: "var(--ink-2)",
-            }}>
-            <span className="w-1.5 h-1.5 rounded-full bg-[#FF6B4A] pulse-dot" aria-hidden="true" />
-            AI Concierge
-          </motion.div>
-
-          {/* Headline */}
-          <motion.h2
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
-            className="font-display text-4xl sm:text-5xl font-semibold text-center mb-4 leading-[1.08] tracking-tight"
-          >
-            <span style={{ color: "var(--ink)" }}>Where in the</span>
-            <br />
-            <span style={{
-              background: "linear-gradient(135deg, #FF6B4A, #F0563A, #E8523A)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-            }}>
-              world
-            </span>
-            <span style={{ color: "var(--ink)" }}> are you headed?</span>
-          </motion.h2>
-
-          <motion.p
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.16 }}
-            className="text-sm text-center max-w-xs mb-9 leading-relaxed"
-            style={{ color: "var(--ink-dim)" }}>
-            Talk to Aria, and watch her build your travel and visa profile in real time.
-          </motion.p>
-
-          {/* Destination pills */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.5, delay: 0.24 }}
-            className="flex flex-wrap gap-2 justify-center mb-9 max-w-md">
-            {DESTINATIONS.map((d, i) => (
-              <motion.span
-                key={d.name}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.35, delay: 0.26 + i * 0.03 }}
-                className="dest-pill"
-              >
-                {d.flag} {d.name}
-              </motion.span>
-            ))}
-          </motion.div>
-
-          {/* CTA buttons */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.4 }}
-            className="flex flex-col sm:flex-row items-center gap-3"
-          >
-            <motion.button
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={() => handleStart(true)}
-              disabled={isStarting}
-              aria-busy={isStarting}
-              className="group relative px-8 py-4 rounded-2xl font-semibold text-white text-sm overflow-hidden disabled:opacity-60 disabled:cursor-not-allowed"
-              style={{
-                background: "linear-gradient(135deg, #FF6B4A, #FF8A5C, #F5A623)",
-                boxShadow: "0 8px 32px rgba(255,107,74,0.35), 0 2px 8px rgba(232,82,58,0.3)",
-              }}
-            >
-              <span className="relative z-10 flex items-center gap-2">
-                <Mic className="w-4 h-4" aria-hidden="true" />
-                {isStarting ? "Launching..." : "Start Talking"}
-              </span>
-              {/* Shimmer */}
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/25 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
-            </motion.button>
-
-            <motion.button
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={() => handleStart(false)}
-              disabled={isStarting}
-              aria-busy={isStarting}
-              className="px-8 py-4 rounded-2xl font-semibold text-sm disabled:opacity-60 disabled:cursor-not-allowed border"
-              style={{
-                background: "var(--surface)",
-                borderColor: "var(--border)",
-                color: "var(--ink)",
-              }}
-            >
-              <span className="flex items-center gap-2">
-                <MessageSquare className="w-4 h-4" aria-hidden="true" />
-                Just Chat
-              </span>
-            </motion.button>
-          </motion.div>
-
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.5, delay: 0.5 }}
-            className="text-xs mt-4" style={{ color: "var(--ink-faint)" }}>
-            Start talking for a live conversation, or just chat by typing — no mic needed
-          </motion.p>
-
-          {/* Feature row */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.5, delay: 0.55 }}
-            className="flex flex-wrap justify-center gap-6 sm:gap-8 mt-9">
-            {FEATURES.map(f => (
-              <div key={f.label} className="text-center space-y-2">
-                <div
-                  className="w-9 h-9 rounded-full flex items-center justify-center mx-auto"
-                  style={{ background: "rgba(255,107,74,0.1)", border: "1px solid rgba(255,107,74,0.22)" }}
-                  aria-hidden="true"
-                >
-                  <f.Icon className="w-4 h-4" style={{ color: "#FF8A65" }} />
-                </div>
-                <p className="text-[11px]" style={{ color: "var(--ink-dim)" }}>{f.label}</p>
-              </div>
-            ))}
-          </motion.div>
-        </div>
+        <>
+          <Landing
+            backend={backend}
+            retryHealth={retryHealth}
+            isStarting={isStarting}
+            leaving={leaving}
+            onStart={(v) => void handleStart(v)}
+            onDestination={(d) => void handleDestination(d)}
+          />
+          <Footer />
+        </>
       )}
 
-      {/* ════════════════════════════════
-          MAIN APP
-      ════════════════════════════════ */}
       {started && (
-        <main className="relative z-10 flex-1 flex flex-col lg:flex-row lg:overflow-hidden app-enter">
+        <main id="main" className="flex-1 min-h-0 flex lg:grid lg:grid-cols-[minmax(0,1fr)_400px] xl:grid-cols-[minmax(0,1fr)_420px] app-enter">
+          {/* ── Conversation column ── */}
+          <section
+            aria-label="Conversation with Aria"
+            className="flex-1 min-w-0 min-h-0 flex flex-col"
+            style={isDesktop ? undefined : { paddingBottom: `calc(${PEEK}px + env(safe-area-inset-bottom))` }}
+          >
+            <h1 className="sr-only">Conversation with Aria</h1>
 
-          {/* ── Center: Voice hero + conversation ── */}
-          <div className="flex-1 flex flex-col relative min-h-[70vh] lg:min-h-0 lg:overflow-hidden">
-
-            <div className={clsx(
-              "flex flex-col items-center justify-center relative transition-all duration-500 gap-5",
-              showTranscript ? "h-64 border-b" : "flex-1"
-            )} style={showTranscript ? { borderColor: "var(--border)" } : undefined}>
-              {/* Ambient warm glow behind orb — fixed size, animated only via
-                  transform/opacity so the compositor scales the already-blurred
-                  layer instead of the browser re-blurring it every frame. */}
-              <div aria-hidden="true"
-                className="absolute w-96 h-96 rounded-full blur-3xl pointer-events-none transition-[transform,opacity] duration-700 ease-out"
-                style={{
-                  transform: `scale(${
-                    status === "listening" || status === "speaking" ? 1
-                    : status === "thinking" ? 0.68
-                    : 0.58
-                  })`,
-                  opacity: status === "listening" ? 0.35
-                    : status === "speaking" ? 0.3
-                    : status === "thinking" ? 0.2
-                    : 0.16,
-                  background: status === "listening"
-                    ? "radial-gradient(circle, #F0525A, transparent)"
-                    : status === "speaking"
-                    ? "radial-gradient(circle, #FF6B4A, transparent)"
-                    : "radial-gradient(circle, #F5A623, transparent)",
-                }} />
-
-              {/* Destination badge */}
-              <AnimatePresence>
-                {profile.destination && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    className="flex items-center gap-2 px-4 py-2 rounded-full border text-sm"
-                    style={{
-                      background: "var(--surface)",
-                      borderColor: "rgba(255,107,74,0.28)",
-                      color: "var(--ink)",
-                    }}>
-                    {(() => {
-                      const flag = DESTINATIONS.find(d => d.name.toLowerCase() === profile.destination?.toLowerCase())?.flag;
-                      return flag
-                        ? <span className="text-base" aria-hidden="true">{flag}</span>
-                        : <Globe2 className="w-4 h-4" style={{ color: "#FF8A65" }} aria-hidden="true" />;
-                    })()}
-                    <span className="font-semibold">{profile.destination}</span>
-                    {profile.travel_month && (
-                      <span style={{ color: "var(--ink-dim)" }}>· {profile.travel_month}</span>
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <VoiceStatus status={status} liveMode={liveMode} hasError={!!error} />
-
+            {/* Voice stage: the single focal element */}
+            <div className="stage-light flex-shrink-0 flex flex-col items-center gap-2.5 sm:gap-4 pt-4 pb-3.5 sm:pt-8 sm:pb-6 border-b border-line">
               <VoiceOrb
                 status={status}
                 liveMode={liveMode}
                 onTap={toggleLiveMode}
                 getInputLevel={getInputLevel}
+                size={isDesktop ? 188 : isShort ? 96 : 120}
+                mode={mode}
               />
-
-              {/* Compact live conversation view */}
-              {!showTranscript && <Conversation messages={transcript} />}
-
-              {/* Explicit, clearly-labeled way back into voice mode for
-                  sessions that started (or were muted into) chat-only —
-                  tapping the orb does the same thing, but that's not an
-                  obvious affordance on its own. */}
-              {!isVoiceActive && !showTranscript && !liveMode && status !== "thinking" && (
-                <motion.button
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  onClick={toggleLiveMode}
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                  className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-1.5 rounded-full transition-colors"
-                  style={{ color: "var(--ink-dim)", background: "var(--surface)", border: "1px solid var(--border)" }}
-                >
-                  <Mic className="w-3 h-3" aria-hidden="true" />
-                  Switch to voice
-                </motion.button>
-              )}
-
-              {/* Text input — hidden while the transcript drawer is open since
-                  the drawer has its own input right below the messages;
-                  showing both at once let this one visually collide with the
-                  drawer header when the voice panel collapses to h-64. */}
-              {!isVoiceActive && !showTranscript && (
-                <div className="flex gap-2 w-full max-w-xs px-4">
-                  <label htmlFor="chat-input" className="sr-only">Type a message</label>
-                  <input
-                    id="chat-input"
-                    type="text"
-                    value={textInput}
-                    onChange={e => setTextInput(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && handleSendText()}
-                    placeholder="Or type here..."
-                    className="flex-1 rounded-xl px-3 py-2 text-sm focus:outline-none transition-all"
-                    style={{
-                      background: "var(--surface)",
-                      border: "1px solid var(--border)",
-                      color: "var(--ink)",
-                    }}
-                  />
-                  <button
-                    onClick={handleSendText}
-                    disabled={!textInput.trim()}
-                    aria-label="Send message"
-                    className="w-9 h-9 rounded-xl flex items-center justify-center transition-all disabled:opacity-30 flex-shrink-0 hover:scale-105 active:scale-95"
-                    style={{ background: "linear-gradient(135deg, #FF6B4A, #F5A623)" }}
-                  >
-                    <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
-                    </svg>
-                  </button>
-                </div>
+              <VoiceStatus
+                status={status}
+                liveMode={liveMode}
+                mode={mode}
+                connecting={connecting}
+                hasError={!!error}
+                isConnected={isConnected}
+              />
+              {profile.destination && (
+                <p className="hidden sm:block text-[13px] text-ink-3 -mt-1">
+                  Planning <span className="text-ink-2">{profile.destination}</span>
+                  {profile.travel_month && <> · <span className="text-ink-2">{profile.travel_month}</span></>}
+                  {profile.passport && <> · <span className="text-ink-2">{profile.passport}</span> passport</>}
+                </p>
               )}
             </div>
 
-            {/* Transcript drawer */}
-            <AnimatePresence>
-              {showTranscript && (
-                <TranscriptDrawer
-                  messages={transcript}
-                  onClose={() => setShowTranscript(false)}
-                  showInput={!isVoiceActive}
-                  textInput={textInput}
-                  onTextInputChange={setTextInput}
-                  onSend={handleSendText}
-                />
-              )}
-            </AnimatePresence>
-          </div>
+            <Conversation messages={transcript} />
 
-          {/* ── Mobile scrim — dims the conversation behind the open insights sheet ── */}
+            <div className="flex-shrink-0 border-t border-line bg-bg">
+              <Composer
+                value={textInput}
+                onChange={setTextInput}
+                onSend={handleSendText}
+                mode={mode}
+                status={status}
+                onSwitchToVoice={toggleLiveMode}
+              />
+            </div>
+          </section>
+
+          {/* ── Mobile scrim ── */}
           <AnimatePresence>
-            {mobileInsightsOpen && (
+            {!isDesktop && sheetOpen && (
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                onClick={() => setMobileInsightsOpen(false)}
-                className="lg:hidden fixed inset-0 z-30 bg-black/50"
+                onClick={() => setSheetOpen(false)}
+                className="fixed inset-0 z-30 bg-black/60"
                 aria-hidden="true"
               />
             )}
           </AnimatePresence>
 
-          {/* ── Right / bottom-sheet: Travel dashboard ──
-              Desktop: static right column, always visible.
-              Mobile: fixed bottom sheet — peek header always visible,
-              tap to expand/collapse. No backdrop-filter here: this panel
-              scrolls, and blurring a moving surface forces the browser to
-              recompute the backdrop every frame. */}
-          <div
+          {/* ── Dashboard: right column on desktop, bottom sheet on mobile ── */}
+          <aside
+            aria-label="Trip dashboard"
+            role="complementary"
             className={clsx(
-              "fixed inset-x-0 bottom-0 z-40 flex flex-col",
-              "lg:static lg:z-auto lg:w-[300px] lg:flex-shrink-0 lg:translate-y-0",
-              "rounded-t-2xl lg:rounded-none border-t lg:border-t-0 lg:border-l",
-              "transition-transform duration-300 ease-out",
-              mobileInsightsOpen ? "translate-y-0" : "translate-y-[calc(100%-52px)]"
+              "flex flex-col min-h-0",
+              "fixed inset-x-0 bottom-0 z-40 max-h-[85dvh] rounded-t-2xl border-t border-line-strong bg-bg-raised",
+              "transition-transform duration-300 ease-out shadow-[0_-16px_48px_rgba(0,0,0,0.4)]",
+              "lg:static lg:z-auto lg:max-h-none lg:rounded-none lg:border-t-0 lg:border-l lg:border-line lg:bg-bg lg:shadow-none lg:transition-none",
             )}
-            style={{ borderColor: "var(--border)", background: "var(--canvas-2)", maxHeight: "min(80vh, 640px)" }}
+            style={isDesktop ? undefined : {
+              transform: sheetOpen ? "translateY(0)" : `translateY(calc(100% - ${PEEK}px - env(safe-area-inset-bottom)))`,
+            }}
           >
-            {/* Mobile peek/toggle header */}
+            {/* Mobile peek bar */}
             <button
-              onClick={() => setMobileInsightsOpen(v => !v)}
-              aria-expanded={mobileInsightsOpen}
-              className="lg:hidden flex items-center justify-between px-4 flex-shrink-0"
-              style={{ height: 52 }}
+              type="button"
+              onClick={() => setSheetOpen((v) => !v)}
+              aria-expanded={sheetOpen}
+              aria-controls="dashboard-body"
+              className="lg:hidden relative flex-shrink-0 flex items-center gap-4 px-5 text-left"
+              style={{ height: PEEK }}
             >
-              <span className="text-xs font-semibold" style={{ color: "var(--ink)" }}>
-                Travel Profile · {profile.lead_score}%
+              <span className="absolute top-2 left-1/2 -translate-x-1/2 w-9 h-1 rounded-full bg-line-strong" aria-hidden="true" />
+              <span className="flex-1 min-w-0">
+                <span className="flex items-baseline justify-between gap-3">
+                  <span className="text-[14px] font-semibold text-ink truncate">
+                    {profile.destination ? `Trip to ${profile.destination}` : "Trip dashboard"}
+                  </span>
+                  <span className="font-mono text-[12px] text-ink-2 tabular-nums flex-shrink-0">{score}% ready</span>
+                </span>
+                <span className="mt-2 block h-1 rounded-full bg-line overflow-hidden" aria-hidden="true">
+                  <span className="block h-full bg-accent rounded-full transition-[width] duration-700" style={{ width: `${score}%` }} />
+                </span>
               </span>
-              <motion.span animate={{ rotate: mobileInsightsOpen ? 180 : 0 }} transition={{ duration: 0.25 }}>
-                <ChevronUp className="w-4 h-4" style={{ color: "var(--ink-dim)" }} aria-hidden="true" />
-              </motion.span>
+              <ChevronUp className={clsx("w-5 h-5 text-ink-3 flex-shrink-0 transition-transform duration-300", sheetOpen && "rotate-180")} aria-hidden="true" />
+              <span className="sr-only">{sheetOpen ? "Hide trip dashboard" : "Show trip dashboard"}</span>
             </button>
 
             <div
-              className="flex-1 overflow-y-auto overscroll-contain p-3 space-y-2.5"
-              aria-label="Travel profile and conversation insights"
-              role="complementary"
+              id="dashboard-body"
+              ref={sheetBodyRef}
+              className="flex-1 min-h-0 overflow-y-auto overscroll-contain border-t border-line lg:border-t-0"
+              style={isDesktop ? undefined : { paddingBottom: "env(safe-area-inset-bottom)" }}
             >
-              {/* Intent */}
-              <AnimatePresence>
-                {profile.intent && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8, height: 0 }}
-                    animate={{ opacity: 1, y: 0, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.3 }}
-                    className="glass rounded-2xl px-4 py-3 overflow-hidden">
-                    <p className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: "var(--ink-dim)" }}>Intent</p>
-                    <p className="text-sm font-semibold" style={{ color: "var(--ink)" }}>
-                      {intentLabel[profile.intent] || profile.intent}
-                    </p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <motion.div
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.06 }}
-                className="glass rounded-2xl px-4 py-4">
-                <LeadScore profile={profile} />
-              </motion.div>
-
-              <motion.div
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.12 }}
-                className="glass rounded-2xl px-4 py-4">
-                <TravelProfile profile={profile} />
-              </motion.div>
-
-              <VisaInsight sessionId={sessionId} destination={profile.destination} passport={profile.passport} />
-
-              <AnimatePresence>
-                {nextField && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8, height: 0 }}
-                    animate={{ opacity: 1, y: 0, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.3 }}
-                    className="rounded-2xl px-4 py-3 overflow-hidden"
-                    style={{ background: "rgba(255,107,74,0.09)", border: "1px solid rgba(255,107,74,0.25)" }}>
-                    <p className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: "var(--ink-dim)" }}>
-                      Next Action
-                    </p>
-                    <p className="text-sm" style={{ color: "var(--ink-2)" }}>
-                      → Ask about {nextField}
-                    </p>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <motion.div
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.18 }}
-                className="glass rounded-2xl px-4 py-4">
-                <p className="text-[10px] font-bold uppercase tracking-widest mb-3" style={{ color: "var(--ink-dim)" }}>
-                  AI Decision Trace
-                </p>
-                <DecisionTrace events={events} />
-              </motion.div>
+              <LeadScore profile={profile} nextField={nextField} />
+              {handoff && <HandoffSummary card={handoff} onOpen={() => setHandoffDismissed(false)} />}
+              <VisaInsight info={visa} destination={profile.destination} passport={profile.passport} />
+              <TravelProfile profile={profile} />
+              <DecisionTrace events={events} />
+              <Credit />
             </div>
-          </div>
+          </aside>
         </main>
       )}
 
-      {handoff && !handoffDismissed && (
-        <HandoffCard card={handoff} onDismiss={() => setHandoffDismissed(true)} />
-      )}
+      {handoff && !handoffDismissed && <HandoffCard card={handoff} onDismiss={dismissHandoff} />}
     </div>
   );
 }

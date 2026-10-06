@@ -1,5 +1,5 @@
 @echo off
-echo Starting Travel Voice Concierge...
+echo Starting Aria (travel voice concierge)...
 echo.
 
 REM Start backend in a new terminal window

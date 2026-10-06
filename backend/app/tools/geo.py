@@ -54,16 +54,23 @@ COUNTRY_NAME_ALIASES = {
     "united arab emirates": "uae",
 }
 
-# Canonical list — visa_knowledge.py imports this rather than keeping its
-# own copy, since "is this country in Schengen" is fundamentally a geo fact.
+# Canonical list of the 29 Schengen members (25 EU states incl. Bulgaria and
+# Romania since 2025-01-01, plus Iceland, Liechtenstein, Norway, Switzerland).
+# Cyprus and Ireland are EU but NOT Schengen. knowledge_base.py imports this.
 SCHENGEN_COUNTRIES = [
-    "france", "germany", "italy", "spain", "netherlands",
-    "portugal", "austria", "switzerland", "greece", "belgium",
-    "sweden", "norway", "denmark", "finland", "czech republic",
-    "poland", "hungary", "croatia", "slovenia", "slovakia",
+    "austria", "belgium", "bulgaria", "croatia", "czech republic", "czechia",
+    "denmark", "estonia", "finland", "france", "germany", "greece", "hungary",
+    "iceland", "italy", "latvia", "liechtenstein", "lithuania", "luxembourg",
+    "malta", "netherlands", "norway", "poland", "portugal", "romania",
+    "slovakia", "slovenia", "spain", "sweden", "switzerland",
 ]
 
-_geolocator = Nominatim(user_agent="atlys-voice-agent-visa-concierge")
+_geolocator = Nominatim(user_agent="aria-travel-concierge")
+
+# In-process cache of resolutions (places don't move); bounded so a flood of
+# junk destinations can't grow memory without limit.
+_RESOLUTION_CACHE: dict[str, "DestinationResolution"] = {}
+_RESOLUTION_CACHE_MAX = 2000
 
 
 def _normalize_raw(raw: str) -> str:
@@ -107,6 +114,26 @@ async def resolve_destination(raw: str) -> DestinationResolution:
     if normalized in REGION_ALIASES:
         return DestinationResolution(key=REGION_ALIASES[normalized])
 
+    if normalized in COUNTRY_NAME_ALIASES:
+        return DestinationResolution(key=COUNTRY_NAME_ALIASES[normalized])
+
+    if normalized in SCHENGEN_COUNTRIES:
+        return DestinationResolution(key=normalized)
+
+    cached = _RESOLUTION_CACHE.get(normalized)
+    if cached is not None:
+        return cached
+
+    result = await _resolve_with_geocoder(raw, normalized)
+    if result.key is None and not result.ambiguous:
+        return result  # failure or no match: don't pin it in the cache
+    if len(_RESOLUTION_CACHE) >= _RESOLUTION_CACHE_MAX:
+        _RESOLUTION_CACHE.pop(next(iter(_RESOLUTION_CACHE)))
+    _RESOLUTION_CACHE[normalized] = result
+    return result
+
+
+async def _resolve_with_geocoder(raw: str, normalized: str) -> DestinationResolution:
     try:
         locations = await asyncio.to_thread(_geocode_many_sync, normalized, 5)
     except (GeopyError, Exception):
@@ -115,6 +142,14 @@ async def resolve_destination(raw: str) -> DestinationResolution:
 
     if not locations:
         return DestinationResolution(key=None)
+
+    # A country name ("Japan") should not be called ambiguous just because
+    # some small town elsewhere shares it: if the top hit is the country
+    # itself, that's the answer.
+    if locations[0].raw.get("addresstype") == "country":
+        top = _country_key(locations[0])
+        if top:
+            return DestinationResolution(key=top)
 
     countries = []
     for loc in locations:
